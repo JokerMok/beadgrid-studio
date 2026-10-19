@@ -1,0 +1,39 @@
+{
+  "name": "beadgrid-studio",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc -b && vite build",
+    "start": "node server/index.mjs",
+    "public:start": "node scripts/public-tunnel.mjs start",
+    "public:status": "node scripts/public-tunnel.mjs status",
+    "public:stop": "node scripts/public-tunnel.mjs stop",
+    "public:restart": "node scripts/public-tunnel.mjs restart",
+    "check": "tsc -b",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:browser": "node scripts/v1.1-regression.mjs",
+    "test:parity": "node scripts/compare-conversion.mjs && node scripts/compare-advanced.mjs && node scripts/compare-export.mjs"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "express": "^5.1.0",
+    "fflate": "^0.8.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "playwright": "1.62.1",
+    "prettier": "3.8.4",
+    "tsx": "^4.20.6",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.9"
+  }
+}

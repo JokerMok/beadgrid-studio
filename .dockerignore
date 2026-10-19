@@ -1,0 +1,9 @@
+node_modules
+data
+verification
+.git
+.env
+.env.*
+!.env.example
+.codex
+.local-public

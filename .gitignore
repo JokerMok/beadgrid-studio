@@ -1,0 +1,16 @@
+node_modules/
+data/
+.env
+*.log
+.DS_Store
+*.tsbuildinfo
+.local-public/
+dist/
+.codex/
+.env.*
+!.env.example
+verification/
+*.sqlite*
+*.db
+*.pem
+*.key
