@@ -114,7 +114,7 @@ CSV为UTF-8 BOM、CRLF、完整引号转义，含作品、规格、每色色号�
 | `src/storage.ts` | IndexedDB、图片解码和文件下载 |
 | `server/index.mjs` | 独立认证、SQLite与作品接口 |
 
-界面和导出图纸的品牌文字在 `src/model.ts` 的 `BRAND`；浏览器标题在 `index.html`。Logo为可替换的图标组件，主题在 `src/styles.css` 的根变量；工作台布局在`src/workbench.css`，专用弹窗布局在`src/editor-dialogs.css`，采购界面在`src/bead-list.css`。默认示例“林间小屋”为本工程原创像素图，不包含原站默认人物作品。未整体引入开源候选项目，也未复制原站打包脚本或样式作为运行工程。数据来源与第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+界面和导出图纸的品牌文字在 `src/model.ts` 的 `BRAND`；浏览器标题在 `index.html`。Logo为可替换的图标组件，主题在 `src/styles.css` 的根变量；工作台布局在`src/workbench.css`，专用弹窗布局在`src/editor-dialogs.css`，采购界面在`src/bead-list.css`。默认示例为《原神》雷电将军，采用本地内置角色立绘与现有算法转换的208×192格、64色色卡图纸；仅在无草稿时显示，不替换已有作品。未整体引入开源候选项目，也未复制原站打包脚本或样式作为运行工程。数据来源与第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 仓库不提交本机数据库、账号会话、`.env`、Tunnel记录、运行日志、上传原图、历史截图或构建缓存；`dist/`通过构建生成。单元测试所需的最小色卡数据和去掉原图的旧项目网格保存在`tests/fixtures/`，`npm test`不依赖本机归档。
 
