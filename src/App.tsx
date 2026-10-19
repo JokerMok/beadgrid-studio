@@ -4,6 +4,7 @@ import ExportDialog from "./components/ExportDialog";
 import BeadListDialog from "./components/BeadListDialog";
 import MaterialSettings from "./components/MaterialSettings";
 import { prepareRaster } from "./prepare-image";
+import { matchesConversion, type ConversionResult } from "./image-conversion";
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
   Hand,
@@ -148,6 +149,7 @@ export default function App() {
     [cursor, setCursor] = useState(""),
     [modal, setModal] = useState<Modal>(null),
     [incoming, setIncoming] = useState<{
+      sessionId: string;
       source: string;
       name: string;
       initial?: Settings;
@@ -386,7 +388,11 @@ export default function App() {
   }, [saved]);
   useEffect(() => {
     const replace = (e: Event) =>
-      setIncoming({ ...(e as CustomEvent).detail, intent: "new" });
+      setIncoming({
+        ...(e as CustomEvent).detail,
+        sessionId: crypto.randomUUID(),
+        intent: "new",
+      });
     window.addEventListener("xing-replace-upload", replace);
     return () => window.removeEventListener("xing-replace-upload", replace);
   }, []);
@@ -414,6 +420,7 @@ export default function App() {
     try {
       const source = await readImage(file);
       setIncoming({
+        sessionId: crypto.randomUUID(),
         source,
         name: file.name,
         initial: defaults(104, 104),
@@ -429,12 +436,41 @@ export default function App() {
     name: string,
     s: Settings,
     intent: "new" | "regenerate",
+    preview?: ConversionResult,
+    signal?: AbortSignal,
   ) {
+    if (preview && !matchesConversion(preview, source, s))
+      throw Error("预览与当前参数不一致，请等待最新预览");
+    signal?.throwIfAborted();
     const base = current.current;
     try {
       await saveLocal(withSync(base));
     } catch (e) {
+      if (preview) throw Error("无法备份当前作品：" + errText(e));
       notify("无法备份当前作品：" + errText(e));
+      return;
+    }
+    signal?.throwIfAborted();
+    if (preview) {
+      commit({
+        ...base,
+        id: intent === "new" ? crypto.randomUUID() : base.id,
+        cloudSync: intent === "new" ? undefined : base.cloudSync,
+        source,
+        sourceName: name,
+        width: s.width,
+        height: s.height,
+        cells: preview.cells,
+        settings: structuredClone(s),
+        name:
+          intent === "regenerate"
+            ? base.name
+            : name.replace(/\.[^.]+$/, "") || base.name,
+        view: "beads",
+      });
+      setIncoming(null);
+      setZoom(1);
+      notify("图纸已生成，开始创作吧");
       return;
     }
     setIncoming(null);
@@ -883,6 +919,7 @@ export default function App() {
                 {action("图片转马赛克", GridFour, () => {
                   if (project.source)
                     setIncoming({
+                      sessionId: crypto.randomUUID(),
                       source: project.source,
                       name: project.sourceName || project.name,
                       intent: "regenerate",
@@ -979,6 +1016,7 @@ export default function App() {
                   run: () => {
                     project.source
                       ? setIncoming({
+                          sessionId: crypto.randomUUID(),
                           source: project.source,
                           name: project.sourceName || project.name,
                           intent: "regenerate",
@@ -1006,6 +1044,7 @@ export default function App() {
                   icon: MagicWand,
                   run: () => {
                     setIncoming({
+                      sessionId: crypto.randomUUID(),
                       source: project.source || projectImage(project),
                       name: project.sourceName || project.name,
                       intent: "regenerate",
@@ -1845,6 +1884,7 @@ export default function App() {
       </main>
       {incoming && (
         <ImportDialog
+          key={incoming.sessionId}
           source={incoming.source}
           name={incoming.name}
           initial={
@@ -1855,8 +1895,15 @@ export default function App() {
             }
           }
           onClose={() => setIncoming(null)}
-          onGenerate={(s) =>
-            generate(incoming.source, incoming.name, s, incoming.intent)
+          onGenerate={(s, preview, signal) =>
+            generate(
+              incoming.source,
+              incoming.name,
+              s,
+              incoming.intent,
+              preview,
+              signal,
+            )
           }
         />
       )}
@@ -2844,7 +2891,7 @@ export default function App() {
           正在恢复工作台…
         </div>
       )}
-      {toast && (
+      {toast && !incoming && (
         <div className="toast" role="alert">
           <CheckCircle size={19} />
           {toast}

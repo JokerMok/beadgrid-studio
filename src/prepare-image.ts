@@ -1,18 +1,41 @@
 import type { Settings } from "./model";
 export type Raster = { pixels: Uint8ClampedArray; size: number };
-const decode = (url: string) =>
+const decode = (url: string, signal?: AbortSignal) =>
   new Promise<HTMLImageElement>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("转换已取消", "AbortError"));
+      return;
+    }
     const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(Error("图片解码失败"));
+    const cleanup = () => {
+      signal?.removeEventListener("abort", abort);
+      image.onload = null;
+      image.onerror = null;
+    };
+    const abort = () => {
+      cleanup();
+      image.src = "";
+      reject(new DOMException("转换已取消", "AbortError"));
+    };
+    image.onload = () => {
+      cleanup();
+      resolve(image);
+    };
+    image.onerror = () => {
+      cleanup();
+      reject(Error("图片解码失败"));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
     image.src = url;
   });
 /** HTMLImageElement is intentional: ImageBitmap uses a different Chromium resampling path. */
 export async function prepareRaster(
   source: string,
   s: Settings,
+  signal?: AbortSignal,
 ): Promise<Raster> {
-  let image = await decode(source);
+  let image = await decode(source, signal);
+  signal?.throwIfAborted();
   if (s.fit === "crop" && s.mode !== "recognize") {
     const r = s.crop,
       sw = image.naturalWidth * r.w,
@@ -34,7 +57,11 @@ export async function prepareRaster(
       c.width,
       c.height,
     );
-    image = await decode(c.toDataURL("image/png"));
+    const cropped = c.toDataURL("image/png");
+    c.width = c.height = 0;
+    image.src = "";
+    image = await decode(cropped, signal);
+    signal?.throwIfAborted();
   }
   if (s.mode === "recognize") {
     const a = s.sourceAlignment ?? {
@@ -71,10 +98,10 @@ export async function prepareRaster(
           7,
         );
       }
-    return {
-      pixels: g.getImageData(0, 0, canvas.width, canvas.height).data,
-      size: 7,
-    };
+    const pixels = g.getImageData(0, 0, canvas.width, canvas.height).data;
+    canvas.width = canvas.height = 0;
+    image.src = "";
+    return { pixels, size: 7 };
   }
   const small =
       s.smallCleanup &&
@@ -109,8 +136,9 @@ export async function prepareRaster(
     w,
     h,
   );
-  return {
-    pixels: g.getImageData(0, 0, canvas.width, canvas.height).data,
-    size,
-  };
+  const pixels = g.getImageData(0, 0, canvas.width, canvas.height).data;
+  canvas.width = canvas.height = 0;
+  image.src = "";
+  signal?.throwIfAborted();
+  return { pixels, size };
 }

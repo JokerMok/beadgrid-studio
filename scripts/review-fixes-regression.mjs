@@ -15,10 +15,7 @@ fs.cpSync(path.join(root, "server"), path.join(sandbox, "server"), {
   recursive: true,
 });
 fs.symlinkSync(
-  path.resolve(
-    root,
-    process.env.TEST_BUILD_DIR || "dist",
-  ),
+  path.resolve(root, process.env.TEST_BUILD_DIR || "dist"),
   path.join(sandbox, "dist"),
 );
 const socket = net.createServer();
@@ -182,7 +179,7 @@ try {
         .setInputFiles({ name: "same.png", mimeType: "image/png", buffer });
     await page.getByRole("dialog", { name: "上传图片并设置板子" }).waitFor();
   }
-  async function generate(height = 16) {
+  async function generate(height = 16, waitForClose = true) {
     const d = page.getByRole("dialog", { name: "上传图片并设置板子" });
     await d.getByRole("button", { name: /^原图完整置入/ }).click();
     for (const [label, value] of [
@@ -192,8 +189,8 @@ try {
       await d.getByLabel(label, { exact: true }).fill(value);
       await d.getByLabel(label, { exact: true }).press("Tab");
     }
-    await d.getByRole("button", { name: /生成拼豆图/ }).click();
-    await d.waitFor({ state: "hidden" });
+    await d.getByRole("button", { name: "确认生成", exact: true }).click();
+    if (waitForClose) await d.waitFor({ state: "hidden" });
   }
   async function generated() {
     await page.getByRole("alert").filter({ hasText: "图纸已生成" }).waitFor();
@@ -297,16 +294,20 @@ try {
   assert.deepEqual(await snapshot(), stable);
   await page.evaluate(() => (window.__conversionFault = "hold"));
   await upload(inputA);
-  await generate();
-  await page.getByRole("button", { name: /取消处理/ }).click();
+  await generate(16, false);
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "取消", exact: true })
+    .click();
   assert.deepEqual(await snapshot(), stable);
   await page.evaluate(() => (window.__conversionFault = "fail"));
   await upload(inputA);
-  await generate();
+  await generate(16, false);
   await page
     .getByRole("alert")
     .filter({ hasText: "定向测试：生成失败" })
     .waitFor();
+  await close();
   assert.deepEqual(await snapshot(), stable);
   await page.evaluate(() => (window.__conversionFault = null));
   mark(
