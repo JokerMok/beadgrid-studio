@@ -186,7 +186,7 @@ export default function App() {
     }),
     [cropActive, setCropActive] = useState(false),
     [cropRect, setCropRect] = useState({ x: 0, y: 0, w: 52, h: 52 }),
-    [notice, setNotice] = useState(true),
+    [panelTab, setPanelTab] = useState<"properties" | "palette">("properties"),
     [historyTick, setHistoryTick] = useState(0),
     [similarThreshold, setSimilarThreshold] = useState(90),
     [readyExport, setReadyExport] = useState<{
@@ -358,6 +358,7 @@ export default function App() {
       }
       if (k === "escape") {
         setCropActive(false);
+        setMobileSide(false);
         setSelection(new Set());
         setFocus(false);
       }
@@ -751,13 +752,33 @@ export default function App() {
     onClick: () => void,
     extra = "",
   ) => (
-    <button className={extra} onClick={onClick}>
+    <button
+      className={extra}
+      title={label}
+      onClick={(e) => {
+        e.currentTarget.closest("details")?.removeAttribute("open");
+        onClick();
+      }}
+    >
       <Icon size={17} />
       <span>{label}</span>
     </button>
   );
   return (
     <div
+      onPointerDownCapture={(e) => {
+        document
+          .querySelectorAll<HTMLDetailsElement>("details.menu[open]")
+          .forEach((menu) => {
+            if (!menu.contains(e.target as Node)) menu.open = false;
+          });
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape")
+          document
+            .querySelectorAll<HTMLDetailsElement>("details.menu[open]")
+            .forEach((menu) => (menu.open = false));
+      }}
       className={
         "app " + (focus ? "focus " : "") + (mobileSide ? "side-open" : "")
       }
@@ -821,12 +842,21 @@ export default function App() {
         }}
       />
       <header className="app-header">
-        <div className="header-identity">
-          <a className="brand" href="#" onClick={(e) => e.preventDefault()}>
-            <strong>
-              {BRAND.english}（{BRAND.name}）
-            </strong>
-          </a>
+        <a
+          className="brand"
+          href="#"
+          onClick={(e) => e.preventDefault()}
+          aria-label="豆格工坊首页"
+        >
+          <span className="brand-mark">
+            <GridFour size={24} weight="fill" />
+          </span>
+          <span>
+            <strong>{BRAND.name}</strong>
+            <small>BEADGRID STUDIO</small>
+          </span>
+        </a>
+        <div className="project-identity">
           <div className="project-title">
             <input
               aria-label="作品名称"
@@ -834,115 +864,74 @@ export default function App() {
               maxLength={120}
               onChange={(e) => change({ ...project, name: e.target.value })}
             />
-            <span
-              className={"save-state " + (saved === "保存失败" ? "failed" : "")}
-            >
-              <i />
-              {saved}
-            </span>
+            <details className="project-menu menu">
+              <summary aria-label="作品菜单" title="作品菜单">
+                <CaretDown size={17} />
+              </summary>
+              <div className="menu-content">
+                <span className="menu-label">作品</span>
+                {action("保存", FloppyDisk, saveNamed)}
+                {action("我的作品", FolderOpen, openWorks)}
+                {action("自定义创作", Plus, () => setModal("new"))}
+                {action("导入项目文件", FolderOpen, () =>
+                  projectInput.current?.click(),
+                )}
+                {action("导出项目", FileArrowDown, () =>
+                  downloadProject(project),
+                )}
+                <hr />
+                {action("图片转马赛克", GridFour, () => {
+                  if (project.source)
+                    setIncoming({
+                      source: project.source,
+                      name: project.sourceName || project.name,
+                      intent: "regenerate",
+                    });
+                  else notify("请先上传一张图片");
+                })}
+                <button disabled title="暂未接入AI服务">
+                  <MagicWand size={18} />
+                  AI 生图<span className="menu-note">暂未开放</span>
+                </button>
+                {action("查看引导", Question, () => setModal("help"))}
+              </div>
+            </details>
           </div>
-        </div>
-        <p className="header-tip">
-          <strong>小贴士：</strong>
-          如果想要还原度高尽量选择221最大颜色数，板子尺寸尽量大一点（建议100–200，根据图片尺寸选择）下载图片可以看到具体对应颜色色卡哦
-        </p>
-        <button
-          className="account-button"
-          onClick={() => (user ? openWorks() : setModal("auth"))}
-        >
-          <UserCircle size={24} />
-          <span>
-            {user ? user.username : "登录 / 注册"}
-            <small>{user ? "独立账号 · 我的作品" : "本地功能全部开放"}</small>
+          <span
+            className={"save-state " + (saved === "保存失败" ? "failed" : "")}
+            role="status"
+          >
+            <i />
+            {saved}
           </span>
-        </button>
+        </div>
         <nav className="top-toolbar" aria-label="工作台操作">
-          {action("查看引导", Question, () => setModal("help"))}
-          {action(
-            "上传图片",
-            ImageSquare,
-            () => fileInput.current?.click(),
-            "",
-          )}
-          {action("自定义创作", PencilSimple, () => setModal("new"))}
-          <button disabled title="原站当前禁用，未接入AI服务">
-            <MagicWand size={17} />
-            AI 生图
-          </button>
-          <span className="toolbar-divider" />
-          {action("下载图纸", DownloadSimple, () => setModal("export"))}
+          {action("上传图片", UploadSimple, () => fileInput.current?.click())}
           {action(
             "用豆清单",
             FileArrowDown,
             () => setModal("bead-list"),
             "bead-list-entry",
           )}
-          {action("保存", FloppyDisk, saveNamed)}
-          {action("保存至我的作品", CloudArrowUp, openWorks, "soft")}
-          {action(
-            "进入拼豆模式",
-            PencilSimple,
-            () => {
-              setTool("brush");
-              change({ ...project, view: "beads" });
-              notify("已进入拼豆模式，可直接编辑格子");
-            },
-            "soft",
-          )}
-          {action(
-            "图片转马赛克",
-            GridFour,
-            () => {
-              if (project.source)
-                setIncoming({
-                  source: project.source,
-                  name: project.sourceName || project.name,
-                  intent: "regenerate",
-                });
-              else notify("请先上传一张图片");
-            },
-            "mosaic-entry",
-          )}
-          <div className="header-local-note">
-            <Eye size={17} />
-            <span>
-              <strong>本地完整制图已开放</strong>
-              <small>完整色号、保存与高清导出</small>
-            </span>
-            <button onClick={openWorks} aria-label="我的作品">
-              我的作品
-            </button>
-          </div>
           <button
-            className="project-backup-shortcut"
-            onClick={() => downloadProject(project)}
+            className="primary export-entry"
+            aria-label="下载图纸"
+            title="导出图纸"
+            onClick={() => setModal("export")}
           >
-            导出项目
+            <DownloadSimple size={18} />
+            <span>导出图纸</span>
+          </button>
+          <button
+            className="account-button icon-button"
+            aria-label={user ? "账号：" + user.username : "登录 / 注册"}
+            title={user ? user.username + " · 我的账号作品" : "登录 / 注册"}
+            onClick={() => (user ? openWorks() : setModal("auth"))}
+          >
+            <UserCircle size={25} />
           </button>
         </nav>
       </header>
-      {notice && (
-        <div className="announcement">
-          <span className="notice-icon">
-            <Leaf size={18} />
-          </span>
-          <div>
-            <strong>本地工作台 · 完整制图能力开放</strong>
-            <p>
-              图片会在浏览器中处理，可自由裁剪、调整板子尺寸和最大颜色数；生成后可使用画笔、橡皮、选区和颜色替换继续编辑。导出的图案、色卡与用量均来自当前图纸。
-              <br />
-              草稿自动保存于此浏览器，重要作品请通过“我的作品”保存命名副本或导出项目文件备份。账号作品保存在配套的独立服务中，与原站账号不互通。
-            </p>
-          </div>
-          <button
-            className="icon-button"
-            aria-label="收起提示"
-            onClick={() => setNotice(false)}
-          >
-            <X size={16} />
-          </button>
-        </div>
-      )}
       <main
         className="workspace"
         onDragOver={(e) => e.preventDefault()}
@@ -965,80 +954,115 @@ export default function App() {
               <span>{name}</span>
             </button>
           ))}
-          <hr />
-          {[
-            {
-              name: "自选颜色",
-              icon: GridFour,
-              run: () => setModal("palette"),
-            },
-            {
-              name: "添加底图",
-              icon: ImageSquare,
-              run: () => referenceInput.current?.click(),
-            },
-            {
-              name: "识别图片色号",
-              icon: GridFour,
-              run: () => {
-                project.source
-                  ? setIncoming({
-                      source: project.source,
+          <div className="rail-divider" />
+          <details className="tool-extensions menu">
+            <summary aria-label="工具扩展" title="工具扩展">
+              <DotsThree size={23} />
+              <span>扩展</span>
+            </summary>
+            <div className="menu-content">
+              <span className="menu-label">处理与辅助工具</span>
+              {[
+                {
+                  name: "自选颜色",
+                  icon: GridFour,
+                  run: () => setModal("palette"),
+                },
+                {
+                  name: "添加底图",
+                  icon: ImageSquare,
+                  run: () => referenceInput.current?.click(),
+                },
+                {
+                  name: "识别图片色号",
+                  icon: GridFour,
+                  run: () => {
+                    project.source
+                      ? setIncoming({
+                          source: project.source,
+                          name: project.sourceName || project.name,
+                          intent: "regenerate",
+                          initial: {
+                            ...project.settings,
+                            width: boardW,
+                            height: boardH,
+                            mode: "recognize",
+                          },
+                        })
+                      : fileInput.current?.click();
+                    notify("选择已对齐图纸，并使用中心采样识别模式");
+                  },
+                },
+                {
+                  name: "替换颜色",
+                  icon: Swap,
+                  run: () => {
+                    setReplaceFrom(color);
+                    setModal("replace");
+                  },
+                },
+                {
+                  name: "识别成手搓图",
+                  icon: MagicWand,
+                  run: () => {
+                    setIncoming({
+                      source: project.source || projectImage(project),
                       name: project.sourceName || project.name,
                       intent: "regenerate",
-                      initial: {
-                        ...project.settings,
-                        width: boardW,
-                        height: boardH,
-                        mode: "recognize",
-                      },
-                    })
-                  : fileInput.current?.click();
-                notify("选择已对齐图纸，并使用中心采样识别模式");
-              },
-            },
-            {
-              name: "替换颜色",
-              icon: Swap,
-              run: () => {
-                setReplaceFrom(color);
-                setModal("replace");
-              },
-            },
-            {
-              name: "识别成手搓图",
-              icon: MagicWand,
-              run: () => {
-                setIncoming({
-                  source: project.source || projectImage(project),
-                  name: project.sourceName || project.name,
-                  intent: "regenerate",
-                  initial: { ...project.settings, mode: "simple" },
-                });
-              },
-            },
-            {
-              name: "禁用色号",
-              icon: WarningCircle,
-              run: () => setModal("disable"),
-            },
-            {
-              name: "图纸调节",
-              icon: SlidersHorizontal,
-              run: () => openAdjust("adjust"),
-            },
-            {
-              name: "网格对齐",
-              icon: GridFour,
-              run: () => openAdjust("align"),
-            },
-            { name: "更多", icon: DotsThree, run: () => setModal("more") },
-          ].map(({ name, icon: Icon, run }) => (
-            <button key={name} aria-label={name} title={name} onClick={run}>
-              <Icon size={21} weight="bold" />
-              <span>{name}</span>
-            </button>
-          ))}
+                      initial: { ...project.settings, mode: "simple" },
+                    });
+                  },
+                },
+                {
+                  name: "禁用色号",
+                  icon: WarningCircle,
+                  run: () => setModal("disable"),
+                },
+                {
+                  name: "图纸调节",
+                  icon: SlidersHorizontal,
+                  run: () => openAdjust("adjust"),
+                },
+                {
+                  name: "网格对齐",
+                  icon: GridFour,
+                  run: () => openAdjust("align"),
+                },
+                { name: "更多", icon: DotsThree, run: () => setModal("more") },
+              ].map(({ name, icon: Icon, run }) => (
+                <button
+                  key={name}
+                  aria-label={name}
+                  title={name}
+                  onClick={(e) => {
+                    e.currentTarget.closest("details")?.removeAttribute("open");
+                    run();
+                  }}
+                >
+                  <Icon size={21} weight="bold" />
+                  <span>{name}</span>
+                </button>
+              ))}
+            </div>
+          </details>
+          <div className="rail-spacer" />
+          <button
+            aria-label="专注模式"
+            title="专注模式"
+            className={focus ? "active" : ""}
+            onClick={() => setFocus(!focus)}
+          >
+            <ArrowsOut size={22} />
+            <span>{focus ? "退出专注" : "专注"}</span>
+          </button>
+          <button
+            aria-label="查看引导"
+            title="使用帮助"
+            onClick={() => setModal("help")}
+          >
+            <Question size={22} />
+            <span>帮助</span>
+          </button>
         </aside>
         <section
           className={
@@ -1049,15 +1073,10 @@ export default function App() {
           }
         >
           <div className="editor-heading">
-            <div className="segmented view-tabs">
+            <div className="view-tabs" role="tablist" aria-label="画布视图">
               <button
-                onClick={() => setFocus(!focus)}
-                className={focus ? "active" : ""}
-              >
-                <ArrowsOut size={15} />
-                <span>{focus ? "退出专注" : "专注模式"}</span>
-              </button>
-              <button
+                role="tab"
+                aria-selected={project.view === "original"}
                 className={project.view === "original" ? "active" : ""}
                 onClick={() => {
                   if (!project.source) {
@@ -1070,50 +1089,37 @@ export default function App() {
                 原图
               </button>
               <button
+                role="tab"
+                aria-selected={project.view === "beads"}
                 className={project.view === "beads" ? "active" : ""}
                 onClick={() => change({ ...project, view: "beads" })}
               >
                 拼豆图
               </button>
               <button
+                role="tab"
+                aria-selected={project.view === "iron"}
                 className={project.view === "iron" ? "active" : ""}
                 onClick={() => change({ ...project, view: "iron" })}
               >
                 熨烫
               </button>
-              <button
-                className={project.grid.codes ? "active" : ""}
-                onClick={() =>
-                  change({
-                    ...project,
-                    grid: { ...project.grid, codes: !project.grid.codes },
-                  })
-                }
-              >
-                色号
-              </button>
             </div>
+            <span className="canvas-heading-note">
+              {project.source ? project.sourceName : "本地创作工作台"}
+            </span>
             <button
-              className="mobile-settings soft"
+              className="mobile-settings icon-button"
+              aria-label="设置与用量"
+              title="设置与用量"
+              aria-expanded={mobileSide}
               onClick={() => setMobileSide(!mobileSide)}
             >
-              <SlidersHorizontal size={17} />
-              设置与用量
+              <SlidersHorizontal size={20} />
+              <span>属性</span>
             </button>
           </div>
           <div className="canvas-shell">
-            <div className="canvas-meta">
-              <span>
-                <i className="live-dot" /> {project.width} × {project.height} 格
-              </span>
-              <span>
-                {project.view === "iron"
-                  ? "熨烫效果预览"
-                  : project.view === "original"
-                    ? "原图参考"
-                    : "拼豆工作区"}
-              </span>
-            </div>
             <CanvasEditor
               project={project}
               tool={tool}
@@ -1139,28 +1145,71 @@ export default function App() {
                   : undefined
               }
             />
-            <div className="canvas-floating">
-              <div
-                className="current-color"
-                style={{ background: PALETTE[color].hex }}
-              />
-              <b>{PALETTE[color].code}</b>
-              <span>{tools.find((t) => t.id === tool)?.name}</span>
-              {(tool === "brush" || tool === "eraser") && (
-                <div className="brush-sizes">
+          </div>
+          {(tool === "brush" || tool === "eraser" || selection.size > 0) && (
+            <div className="editing-dock">
+              {selection.size > 0 ? (
+                <div className="selection-toolbar">
+                  <b>已选 {selection.size} 格</b>
+                  <button onClick={() => fillSelection(color)}>
+                    填入 {PALETTE[color].code}
+                  </button>
+                  <button onClick={() => fillSelection(-1)}>清除选区</button>
+                  <button onClick={() => selectCells(new Set())}>取消</button>
+                </div>
+              ) : (
+                <div className="brush-options">
+                  <span>{tool === "eraser" ? "方形橡皮" : "方形画笔"}</span>
                   {[1, 2, 3, 5].map((n) => (
                     <button
                       key={n}
                       aria-label={`${n}格画笔`}
-                      className={brush === n ? "active" : ""}
+                      className={n === brush ? "active" : ""}
                       onClick={() => setBrush(n)}
                     >
-                      {n}
+                      {n}×{n}
                     </button>
                   ))}
+                  <em>操作提示</em>
+                  <small>电脑按住鼠标拖动；手机/平板可拖动连续填色。</small>
                 </div>
               )}
-              <span className="floating-divider" />
+            </div>
+          )}
+          <footer className="editor-statusbar">
+            <div className="project-metrics">
+              <span>
+                {project.width} × {project.height} <small>格</small>
+              </span>
+              <span>
+                {counts.length} <small>色</small>
+              </span>
+              <span data-testid="bead-total">
+                {total.toLocaleString()} <small>颗</small>
+              </span>
+            </div>
+            <div className="history-controls">
+              {" "}
+              <button
+                aria-label="撤销"
+                disabled={!undo.current.length}
+                onClick={undoEdit}
+              >
+                <ArrowCounterClockwise />
+                撤销
+              </button>
+              <button
+                aria-label="重做"
+                disabled={!redo.current.length}
+                onClick={redoEdit}
+              >
+                <ArrowClockwise />
+                前进
+              </button>
+            </div>
+            <span className="cursor-status">{cursor}</span>
+            <div className="zoom-controls">
+              {" "}
               <button
                 aria-label="缩小"
                 onClick={() =>
@@ -1229,485 +1278,569 @@ export default function App() {
                 <ArrowsOut size={16} />
               </button>
             </div>
-          </div>
-          {(tool === "brush" || tool === "eraser" || selection.size > 0) && (
-            <div className="editing-dock">
-              {selection.size > 0 ? (
-                <div className="selection-toolbar">
-                  <b>已选 {selection.size} 格</b>
-                  <button onClick={() => fillSelection(color)}>
-                    填入 {PALETTE[color].code}
-                  </button>
-                  <button onClick={() => fillSelection(-1)}>清除选区</button>
-                  <button onClick={() => selectCells(new Set())}>取消</button>
-                </div>
-              ) : (
-                <div className="brush-options">
-                  <span>{tool === "eraser" ? "方形橡皮" : "方形画笔"}</span>
-                  {[1, 2, 3, 5].map((n) => (
+            <details className="canvas-menu menu">
+              <summary aria-label="画布操作" title="变换与显示设置">
+                <SlidersHorizontal size={19} />
+              </summary>
+              <div className="menu-content">
+                {" "}
+                <button
+                  className="danger-quiet"
+                  onClick={() => {
+                    commit({
+                      ...project,
+                      cells: new Int16Array(project.cells.length).fill(-1),
+                    });
+                    notify("画面已清除，可撤销恢复");
+                  }}
+                >
+                  <Trash />
+                  清除画面
+                </button>
+                <span className="toolbar-divider" />
+                {action("旋转90°", ArrowsClockwise, () =>
+                  commit(transform(project, "rotate")),
+                )}
+                {action("左右翻转", FlipHorizontal, () =>
+                  commit(transform(project, "flipX")),
+                )}
+                {action("上下翻转", FlipVertical, () =>
+                  commit(transform(project, "flipY")),
+                )}
+                {action("手动裁剪", Crop, () => {
+                  setCropRect({
+                    x: 0,
+                    y: 0,
+                    w: project.width,
+                    h: project.height,
+                  });
+                  setCropActive(true);
+                  setTool("hand");
+                  setSelection(new Set());
+                })}
+                <span className="toolbar-divider" />
+                <button
+                  className={project.grid.lines ? "soft" : ""}
+                  onClick={() =>
+                    change({
+                      ...project,
+                      grid: { ...project.grid, lines: !project.grid.lines },
+                    })
+                  }
+                >
+                  <GridFour />
+                  显示网格
+                </button>
+                <details className="grid-color-settings">
+                  <summary>网格颜色</summary>
+                  <div className="grid-color-popover">
+                    {(
+                      [
+                        ["color", "普通格", "普通网格颜色"],
+                        ["majorColor", "每5格", "5格网格颜色"],
+                        ["blockColor", "每10格", "10格网格颜色"],
+                      ] as const
+                    ).map(([key, label, aria]) => (
+                      <label key={key}>
+                        <span>{label}</span>
+                        <input
+                          type="color"
+                          aria-label={aria}
+                          value={
+                            project.grid[key] ||
+                            (key === "color" ? "#a0c4bc" : "#29a88f")
+                          }
+                          onChange={(e) =>
+                            change({
+                              ...project,
+                              grid: { ...project.grid, [key]: e.target.value },
+                            })
+                          }
+                        />
+                      </label>
+                    ))}
                     <button
-                      key={n}
-                      aria-label={`${n}格画笔`}
-                      className={n === brush ? "active" : ""}
-                      onClick={() => setBrush(n)}
-                    >
-                      {n}×{n}
-                    </button>
-                  ))}
-                  <em>操作提示</em>
-                  <small>电脑按住鼠标拖动；手机/平板可拖动连续填色。</small>
-                </div>
-              )}
-            </div>
-          )}
-          <div className="bottom-toolbar">
-            <button
-              aria-label="撤销"
-              disabled={!undo.current.length}
-              onClick={undoEdit}
-            >
-              <ArrowCounterClockwise />
-              撤销
-            </button>
-            <button
-              aria-label="重做"
-              disabled={!redo.current.length}
-              onClick={redoEdit}
-            >
-              <ArrowClockwise />
-              前进
-            </button>
-            <button
-              className="danger-quiet"
-              onClick={() => {
-                commit({
-                  ...project,
-                  cells: new Int16Array(project.cells.length).fill(-1),
-                });
-                notify("画面已清除，可撤销恢复");
-              }}
-            >
-              <Trash />
-              清除画面
-            </button>
-            <span className="toolbar-divider" />
-            {action("旋转90°", ArrowsClockwise, () =>
-              commit(transform(project, "rotate")),
-            )}
-            {action("左右翻转", FlipHorizontal, () =>
-              commit(transform(project, "flipX")),
-            )}
-            {action("上下翻转", FlipVertical, () =>
-              commit(transform(project, "flipY")),
-            )}
-            {action("手动裁剪", Crop, () => {
-              setCropRect({ x: 0, y: 0, w: project.width, h: project.height });
-              setCropActive(true);
-              setTool("hand");
-              setSelection(new Set());
-            })}
-            <span className="toolbar-divider" />
-            <button
-              className={project.grid.lines ? "soft" : ""}
-              onClick={() =>
-                change({
-                  ...project,
-                  grid: { ...project.grid, lines: !project.grid.lines },
-                })
-              }
-            >
-              <GridFour />
-              显示网格
-            </button>
-            <details className="grid-color-settings">
-              <summary>网格颜色</summary>
-              <div className="grid-color-popover">
-                {(
-                  [
-                    ["color", "普通格", "普通网格颜色"],
-                    ["majorColor", "每5格", "5格网格颜色"],
-                    ["blockColor", "每10格", "10格网格颜色"],
-                  ] as const
-                ).map(([key, label, aria]) => (
-                  <label key={key}>
-                    <span>{label}</span>
-                    <input
-                      type="color"
-                      aria-label={aria}
-                      value={
-                        project.grid[key] ||
-                        (key === "color" ? "#a0c4bc" : "#29a88f")
-                      }
-                      onChange={(e) =>
+                      onClick={() =>
                         change({
                           ...project,
-                          grid: { ...project.grid, [key]: e.target.value },
+                          grid: {
+                            ...project.grid,
+                            color: "#a0c4bc",
+                            majorColor: "#29a88f",
+                            blockColor: "#29a88f",
+                          },
                         })
                       }
-                    />
-                  </label>
-                ))}
+                    >
+                      恢复推荐
+                    </button>
+                  </div>
+                </details>
                 <button
+                  className={project.grid.codes ? "soft" : ""}
+                  disabled={project.view === "iron"}
+                  onClick={() =>
+                    change({
+                      ...project,
+                      grid: { ...project.grid, codes: !project.grid.codes },
+                    })
+                  }
+                >
+                  <Palette />
+                  显示色号
+                </button>
+                <button
+                  className={project.grid.coordinates ? "soft" : ""}
                   onClick={() =>
                     change({
                       ...project,
                       grid: {
                         ...project.grid,
-                        color: "#a0c4bc",
-                        majorColor: "#29a88f",
-                        blockColor: "#29a88f",
+                        coordinates: !project.grid.coordinates,
                       },
                     })
                   }
                 >
-                  恢复推荐
+                  显示坐标
                 </button>
               </div>
             </details>
-            <button
-              className={project.grid.codes ? "soft" : ""}
-              disabled={project.view === "iron"}
-              onClick={() =>
-                change({
-                  ...project,
-                  grid: { ...project.grid, codes: !project.grid.codes },
-                })
-              }
-            >
-              <Palette />
-              显示色号
-            </button>
-            <button
-              className={project.grid.coordinates ? "soft" : ""}
-              onClick={() =>
-                change({
-                  ...project,
-                  grid: {
-                    ...project.grid,
-                    coordinates: !project.grid.coordinates,
-                  },
-                })
-              }
-            >
-              显示坐标
-            </button>
-          </div>
-          <div className="editor-status">
-            <span>
-              {cursor || "滚轮缩放 · H拖动画布 · B画笔 · Ctrl/⌘ Z撤销"}
-            </span>
-            <span data-testid="bead-total">
-              {total.toLocaleString()} 颗 · {counts.length} 色 ·{" "}
-              {project.cells.length - total} 空格
-            </span>
-          </div>
+          </footer>
         </section>
-        <aside className="settings-panel">
-          <div className="mobile-panel-header">
-            <b>板子与用量</b>
+        {mobileSide && (
+          <button
+            className="drawer-backdrop"
+            aria-label="关闭属性面板"
+            onClick={() => setMobileSide(false)}
+          />
+        )}
+        <aside className="settings-panel" aria-label="属性与色卡">
+          <div className="panel-tabs" role="tablist" aria-label="面板视图">
             <button
-              className="icon-button"
+              role="tab"
+              aria-selected={panelTab === "properties"}
+              className={panelTab === "properties" ? "active" : ""}
+              onClick={() => setPanelTab("properties")}
+            >
+              属性
+            </button>
+            <button
+              role="tab"
+              aria-selected={panelTab === "palette"}
+              className={panelTab === "palette" ? "active" : ""}
+              onClick={() => setPanelTab("palette")}
+            >
+              色卡 <small>{counts.length}</small>
+            </button>
+            <button
+              className="mobile-panel-close icon-button"
               aria-label="关闭设置"
               onClick={() => setMobileSide(false)}
             >
-              <X />
+              <X size={20} />
             </button>
           </div>
-          <section className="panel-section">
-            <div className="section-title">
-              <h3>板子设置</h3>
-              <span>
-                {project.width} × {project.height}
-              </span>
-              <select
-                className="preset-select"
-                aria-label="常规板尺寸推荐"
-                value=""
-                onChange={(e) => {
-                  const n = +e.target.value;
-                  if (n) {
-                    setBoardW(n);
-                    setBoardH(n);
-                  }
-                }}
-              >
-                <option value="">常规板尺寸推荐</option>
-                {[52, 78, 104, 120].map((n) => (
-                  <option key={n} value={n}>
-                    {n} × {n}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <label className="label">板子尺寸</label>
-            <div className="dimensions">
-              <label>
-                宽
-                <input
-                  aria-label="板子宽度"
-                  type="number"
-                  min="16"
-                  max="1000"
-                  value={boardW}
-                  onChange={(e) => setBoardW(+e.target.value)}
-                />
-              </label>
-              <span>×</span>
-              <label>
-                高
-                <input
-                  aria-label="板子高度"
-                  type="number"
-                  min="16"
-                  max="1000"
-                  value={boardH}
-                  onChange={(e) => setBoardH(+e.target.value)}
-                />
-              </label>
-            </div>
-            <p className="micro">宽、高分别设置，范围16～1000</p>
-            <MaterialSettings
-              settings={project.settings}
-              onChange={updateSettings}
-              width={project.width}
-              height={project.height}
-            />
-            <label className="field">
-              最大颜色数{" "}
-              <b>
-                <input
-                  className="color-limit-number"
-                  aria-label="最大颜色数数值"
-                  type="number"
-                  min="3"
-                  max="221"
-                  value={project.settings.limit}
-                  onChange={(e) =>
-                    updateSettings({
-                      limit: Math.max(3, Math.min(221, +e.target.value || 3)),
-                    })
-                  }
-                />
-                <small> / 221</small>
-              </b>
-              <input
-                aria-label="最大颜色数"
-                type="range"
-                min="3"
-                max="221"
-                value={project.settings.limit}
-                onChange={(e) => updateSettings({ limit: +e.target.value })}
-              />
-            </label>
-            <label className="check-box">
-              <input
-                type="checkbox"
-                checked={project.settings.merge > 0}
-                onChange={(e) =>
-                  updateSettings({ merge: e.target.checked ? 3 : 0 })
-                }
-              />
-              <span>
-                <b>自动合并少量杂色</b>
-                <small>
-                  合并极少色号，并清理相近色造成的孤立杂点；深色线条会优先保留。
-                </small>
-              </span>
-            </label>
-            <button className="soft full" onClick={applySettings}>
-              应用到当前图纸 <ArrowRight size={16} />
-            </button>
-            <div className="edge-control">
-              <label className="field">
-                边缘强化{" "}
-                <b>
-                  <span>实时预览</span>
-                  <input
-                    className="edge-number"
-                    type="number"
-                    aria-label="当前图纸边缘强化数值"
-                    min="0"
-                    max="100"
-                    value={project.settings.edges}
-                    onFocus={checkpoint}
-                    onChange={(e) => previewEdges(+e.target.value)}
+          <div className="panel-body" hidden={panelTab !== "properties"}>
+            <section className="source-preview panel-section">
+              <h3>{project.source ? "原图预览" : "图案预览"}</h3>
+              <div className="source-thumbnail">
+                {project.source ? (
+                  <img
+                    src={project.source}
+                    alt={project.sourceName || "当前作品原图"}
                   />
-                  %
-                </b>
-                <input
-                  aria-label="当前图纸边缘强化强度"
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={project.settings.edges}
-                  onPointerDown={checkpoint}
-                  onChange={(e) => previewEdges(+e.target.value)}
-                />
-              </label>
-              <p className="micro">
-                拖动即可在图纸上实时预览；会将边缘多余近色归并到连续轮廓色；此功能推荐中小图使用，大图或者人像不建议使用。
-              </p>
-              <button
-                className="primary outline-action"
-                onClick={() => setModal("outline")}
-              >
-                识别 / 手绘边缘 · 统一色号
-              </button>
-            </div>
-            <button
-              className="soft similar-action"
-              onClick={() => setModal("similar")}
-            >
-              使用相似色号合并
-            </button>
-            {project.reference && (
-              <button
-                className="soft full"
-                onClick={() => setModal("reference")}
-              >
-                调节描摹底图
-              </button>
-            )}
-          </section>
-          <section className="panel-section usage-section">
-            <div className="section-title">
-              <h3>调色板</h3>
-              <button
-                className="text-button"
-                onClick={() => setModal("palette")}
-              >
-                全部221色 <CaretDown />
-              </button>
-            </div>
-            <div className="selected-color">
-              <div style={{ background: PALETTE[color].hex }} />
-              <span>
-                <b>{PALETTE[color].code}</b>
-                <small>{PALETTE[color].name}</small>
-              </span>
-              <strong>
-                {countMap.get(color) || 0}
-                <small> 颗</small>
-              </strong>
-            </div>
-            <div className="palette-switch">
-              <button
-                className={paletteTab === "used" ? "active" : ""}
-                onClick={() => setPaletteTab("used")}
-              >
-                当前用色 {counts.length}
-              </button>
-              <button
-                className={paletteTab === "all" ? "active" : ""}
-                onClick={() => setPaletteTab("all")}
-              >
-                全部色卡
-              </button>
-            </div>
-            <input
-              className="search"
-              aria-label="搜索色号"
-              placeholder="搜索色号，如 A1、H7"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            <div className="side-colors">
-              {filteredColors.map((i) => (
+                ) : (
+                  <MiniPreview project={project} />
+                )}
+              </div>
+              <div className="source-caption">
+                <span>{project.sourceName || project.name}</span>
                 <button
-                  key={i}
-                  title={`${PALETTE[i].code} · ${PALETTE[i].name} · ${countMap.get(i) || 0}颗`}
-                  aria-label={`选择色号${PALETTE[i].code}`}
-                  className={
-                    (i === color ? "selected " : "") +
-                    (project.settings.disabled.includes(i)
-                      ? "disabled-color"
-                      : "")
-                  }
-                  onClick={() => {
-                    setColor(i);
-                    setTool("brush");
+                  className="icon-button"
+                  aria-label="更换原图"
+                  title="上传新素材"
+                  onClick={() => fileInput.current?.click()}
+                >
+                  <UploadSimple size={17} />
+                </button>
+              </div>
+            </section>
+            <section className="panel-section">
+              <div className="section-title">
+                <h3>板子设置</h3>
+                <span>
+                  {project.width} × {project.height}
+                </span>
+                <select
+                  className="preset-select"
+                  aria-label="常规板尺寸推荐"
+                  value=""
+                  onChange={(e) => {
+                    const n = +e.target.value;
+                    if (n) {
+                      setBoardW(n);
+                      setBoardH(n);
+                    }
                   }}
                 >
-                  <span style={{ background: PALETTE[i].hex }} />
-                  <div className="color-row-copy">
-                    <strong>{PALETTE[i].code}</strong>
-                    <small>{PALETTE[i].name}</small>
-                  </div>
-                  <em>需要 {countMap.get(i) || 0} 颗</em>
-                </button>
-              ))}
-              {!filteredColors.length && (
-                <p className="muted empty-small">
-                  {search ? "没有匹配的色号" : "这里将显示画面中用到的色号"}
-                </p>
-              )}
-            </div>
-            <div className="usage-summary">
-              <span>预计用量</span>
-              <strong data-testid="usage-total">
-                {total.toLocaleString()} <small>颗</small>
-              </strong>
-            </div>
-            <button className="full soft" onClick={() => setModal("bead-list")}>
-              用豆清单 · 复制与下载
-            </button>
-          </section>
-          <section className="panel-section export-preview">
-            <div className="section-title">
-              <h3>导出预览</h3>
-              <span className="tag">高清 PNG</span>
-            </div>
-            <div className="mini-preview">
-              <ExportPreview project={project} />
-              <div>
-                <b>{project.name}</b>
-                <small>
-                  {project.width} × {project.height} 格 · {counts.length} 色
-                </small>
-                <span>{total.toLocaleString()} 颗拼豆</span>
+                  <option value="">常规板尺寸推荐</option>
+                  {[52, 78, 104, 120].map((n) => (
+                    <option key={n} value={n}>
+                      {n} × {n}
+                    </option>
+                  ))}
+                </select>
               </div>
-            </div>
-            <p className="micro">逐格色号 · 宽高坐标 · 完整用量清单</p>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={exportOptions.mirror}
-                onChange={(e) =>
-                  setExportOptions({
-                    ...exportOptions,
-                    mirror: e.target.checked,
-                  })
-                }
+
+              <label className="label">板子尺寸</label>
+              <div className="dimensions">
+                <label>
+                  宽
+                  <input
+                    aria-label="板子宽度"
+                    type="number"
+                    min="16"
+                    max="1000"
+                    value={boardW}
+                    onChange={(e) => setBoardW(+e.target.value)}
+                  />
+                </label>
+                <span>×</span>
+                <label>
+                  高
+                  <input
+                    aria-label="板子高度"
+                    type="number"
+                    min="16"
+                    max="1000"
+                    value={boardH}
+                    onChange={(e) => setBoardH(+e.target.value)}
+                  />
+                </label>
+              </div>
+              <p className="micro">宽、高分别设置，范围16～1000</p>
+              <MaterialSettings
+                compact
+                settings={project.settings}
+                onChange={updateSettings}
+                width={project.width}
+                height={project.height}
               />
-              镜像导出（熨烫用）
-            </label>
-            <button className="primary full" onClick={() => setModal("export")}>
-              <DownloadSimple size={18} />
-              导出图纸
-            </button>
-            <div className="export-links">
-              <button
-                onClick={() => {
-                  setExportOptions({ ...exportOptions, kind: "palette" });
-                  setModal("export");
-                }}
-              >
-                独立色卡
+              <details className="panel-disclosure">
+                <summary>
+                  转换与边缘处理 <SlidersHorizontal size={16} />
+                </summary>
+                <div className="disclosure-body">
+                  <label className="field">
+                    最大颜色数{" "}
+                    <b>
+                      <input
+                        className="color-limit-number"
+                        aria-label="最大颜色数数值"
+                        type="number"
+                        min="3"
+                        max="221"
+                        value={project.settings.limit}
+                        onChange={(e) =>
+                          updateSettings({
+                            limit: Math.max(
+                              3,
+                              Math.min(221, +e.target.value || 3),
+                            ),
+                          })
+                        }
+                      />
+                      <small> / 221</small>
+                    </b>
+                    <input
+                      aria-label="最大颜色数"
+                      type="range"
+                      min="3"
+                      max="221"
+                      value={project.settings.limit}
+                      onChange={(e) =>
+                        updateSettings({ limit: +e.target.value })
+                      }
+                    />
+                  </label>
+                  <label className="check-box">
+                    <input
+                      type="checkbox"
+                      checked={project.settings.merge > 0}
+                      onChange={(e) =>
+                        updateSettings({ merge: e.target.checked ? 3 : 0 })
+                      }
+                    />
+                    <span>
+                      <b>自动合并少量杂色</b>
+                      <small>
+                        合并极少色号，并清理相近色造成的孤立杂点；深色线条会优先保留。
+                      </small>
+                    </span>
+                  </label>
+                  <button className="soft full" onClick={applySettings}>
+                    应用到当前图纸 <ArrowRight size={16} />
+                  </button>
+                  <div className="edge-control">
+                    <label className="field">
+                      边缘强化{" "}
+                      <b>
+                        <span>实时预览</span>
+                        <input
+                          className="edge-number"
+                          type="number"
+                          aria-label="当前图纸边缘强化数值"
+                          min="0"
+                          max="100"
+                          value={project.settings.edges}
+                          onFocus={checkpoint}
+                          onChange={(e) => previewEdges(+e.target.value)}
+                        />
+                        %
+                      </b>
+                      <input
+                        aria-label="当前图纸边缘强化强度"
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={project.settings.edges}
+                        onPointerDown={checkpoint}
+                        onChange={(e) => previewEdges(+e.target.value)}
+                      />
+                    </label>
+                    <p className="micro">
+                      拖动即可在图纸上实时预览；会将边缘多余近色归并到连续轮廓色；此功能推荐中小图使用，大图或者人像不建议使用。
+                    </p>
+                    <button
+                      className="primary outline-action"
+                      onClick={() => setModal("outline")}
+                    >
+                      识别 / 手绘边缘 · 统一色号
+                    </button>
+                  </div>
+                  <button
+                    className="soft similar-action"
+                    onClick={() => setModal("similar")}
+                  >
+                    使用相似色号合并
+                  </button>
+                  {project.reference && (
+                    <button
+                      className="soft full"
+                      onClick={() => setModal("reference")}
+                    >
+                      调节描摹底图
+                    </button>
+                  )}
+                </div>
+              </details>
+            </section>
+            <section className="panel-section compact-usage">
+              <div className="section-title">
+                <h3>用色统计</h3>
+                <button
+                  className="text-button"
+                  onClick={() => setPanelTab("palette")}
+                >
+                  查看全部 <ArrowRight size={14} />
+                </button>
+              </div>
+              <div className="compact-usage-summary">
+                <span>
+                  <b>{counts.length}</b>使用颜色
+                </span>
+                <span>
+                  <b data-testid="usage-total">{total.toLocaleString()}</b>
+                  总用豆颗数
+                </span>
+              </div>
+              <div className="compact-color-list">
+                {counts.slice(0, 2).map(([i, count]) => (
+                  <button
+                    key={i}
+                    title={PALETTE[i].code + " · " + count + "颗"}
+                    onClick={() => {
+                      setColor(i);
+                      setTool("brush");
+                    }}
+                  >
+                    <i style={{ background: PALETTE[i].hex }} />
+                    <b>{PALETTE[i].code}</b>
+                    <span>{count.toLocaleString()} 颗</span>
+                  </button>
+                ))}
+              </div>
+              {!counts.length && (
+                <p className="muted">当前图纸为空，绘制后查看用量。</p>
+              )}
+              <button className="full" onClick={() => setModal("bead-list")}>
+                <FileArrowDown size={17} />
+                打开用豆清单
               </button>
+            </section>
+            <details className="panel-disclosure export-disclosure">
+              <summary>
+                导出设置 <DownloadSimple size={16} />
+              </summary>{" "}
+              <section className="panel-section export-preview">
+                <div className="section-title">
+                  <h3>导出预览</h3>
+                  <span className="tag">高清 PNG</span>
+                </div>
+                <div className="mini-preview">
+                  <ExportPreview project={project} />
+                  <div>
+                    <b>{project.name}</b>
+                    <small>
+                      {project.width} × {project.height} 格 · {counts.length} 色
+                    </small>
+                    <span>{total.toLocaleString()} 颗拼豆</span>
+                  </div>
+                </div>
+                <p className="micro">逐格色号 · 宽高坐标 · 完整用量清单</p>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={exportOptions.mirror}
+                    onChange={(e) =>
+                      setExportOptions({
+                        ...exportOptions,
+                        mirror: e.target.checked,
+                      })
+                    }
+                  />
+                  镜像导出（熨烫用）
+                </label>
+                <button
+                  className="primary full"
+                  onClick={() => setModal("export")}
+                >
+                  <DownloadSimple size={18} />
+                  导出图纸
+                </button>
+                <div className="export-links">
+                  <button
+                    onClick={() => {
+                      setExportOptions({ ...exportOptions, kind: "palette" });
+                      setModal("export");
+                    }}
+                  >
+                    独立色卡
+                  </button>
+                  <button
+                    onClick={() => {
+                      setExportOptions({ ...exportOptions, kind: "sections" });
+                      setModal("export");
+                    }}
+                  >
+                    分板导出
+                  </button>
+                </div>
+              </section>
+              <p className="sidebar-footer">
+                本地工作台 · 数据只在你选择时上传至独立服务
+              </p>
+            </details>
+          </div>
+          <div
+            className="panel-body palette-body"
+            hidden={panelTab !== "palette"}
+          >
+            {" "}
+            <section className="panel-section usage-section">
+              <div className="section-title">
+                <h3>调色板</h3>
+                <button
+                  className="text-button"
+                  onClick={() => setModal("palette")}
+                >
+                  全部221色 <CaretDown />
+                </button>
+              </div>
+              <div className="selected-color">
+                <div style={{ background: PALETTE[color].hex }} />
+                <span>
+                  <b>{PALETTE[color].code}</b>
+                  <small>{PALETTE[color].name}</small>
+                </span>
+                <strong>
+                  {countMap.get(color) || 0}
+                  <small> 颗</small>
+                </strong>
+              </div>
+              <div className="palette-switch">
+                <button
+                  className={paletteTab === "used" ? "active" : ""}
+                  onClick={() => setPaletteTab("used")}
+                >
+                  当前用色 {counts.length}
+                </button>
+                <button
+                  className={paletteTab === "all" ? "active" : ""}
+                  onClick={() => setPaletteTab("all")}
+                >
+                  全部色卡
+                </button>
+              </div>
+              <input
+                className="search"
+                aria-label="搜索色号"
+                placeholder="搜索色号，如 A1、H7"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <div className="side-colors">
+                {filteredColors.map((i) => (
+                  <button
+                    key={i}
+                    title={`${PALETTE[i].code} · ${PALETTE[i].name} · ${countMap.get(i) || 0}颗`}
+                    aria-label={`选择色号${PALETTE[i].code}`}
+                    className={
+                      (i === color ? "selected " : "") +
+                      (project.settings.disabled.includes(i)
+                        ? "disabled-color"
+                        : "")
+                    }
+                    onClick={() => {
+                      setColor(i);
+                      setTool("brush");
+                    }}
+                  >
+                    <span style={{ background: PALETTE[i].hex }} />
+                    <div className="color-row-copy">
+                      <strong>{PALETTE[i].code}</strong>
+                      <small>{PALETTE[i].name}</small>
+                    </div>
+                    <em>需要 {countMap.get(i) || 0} 颗</em>
+                  </button>
+                ))}
+                {!filteredColors.length && (
+                  <p className="muted empty-small">
+                    {search ? "没有匹配的色号" : "这里将显示画面中用到的色号"}
+                  </p>
+                )}
+              </div>
+              <div className="usage-summary">
+                <span>预计用量</span>
+                <strong data-testid="palette-usage-total">
+                  {total.toLocaleString()} <small>颗</small>
+                </strong>
+              </div>
               <button
-                onClick={() => {
-                  setExportOptions({ ...exportOptions, kind: "sections" });
-                  setModal("export");
-                }}
+                className="full soft"
+                onClick={() => setModal("bead-list")}
               >
-                分板导出
+                用豆清单 · 复制与下载
               </button>
-            </div>
-          </section>
-          <p className="sidebar-footer">
-            本地工作台 · 数据只在你选择时上传至独立服务
-          </p>
+            </section>
+          </div>
+          <div className="panel-footer">
+            <span>
+              <i className="live-dot" />
+              本地创作
+            </span>
+            <span>标准 221 色</span>
+          </div>
         </aside>
       </main>
       {incoming && (
@@ -2629,6 +2762,9 @@ export default function App() {
       )}
       {modal === "help" && (
         <Dialog title="从图片到一颗颗拼豆" onClose={() => setModal(null)}>
+          <p className="hint">
+            完整制图能力已开放。图片在浏览器本地处理，草稿自动保存在此浏览器；重要作品请保存命名副本或导出项目文件备份。账号作品保存在配套独立服务中。
+          </p>
           <ol className="guide">
             <li>
               <b>导入与构图</b>

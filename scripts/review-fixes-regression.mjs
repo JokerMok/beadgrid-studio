@@ -15,7 +15,10 @@ fs.cpSync(path.join(root, "server"), path.join(sandbox, "server"), {
   recursive: true,
 });
 fs.symlinkSync(
-  path.join(root, ".local-public/review-build"),
+  path.resolve(
+    root,
+    process.env.TEST_BUILD_DIR || "dist",
+  ),
   path.join(sandbox, "dist"),
 );
 const socket = net.createServer();
@@ -97,6 +100,14 @@ try {
   page.setDefaultTimeout(20000);
   page.on("pageerror", (e) => report.errors.push(e.message));
   const button = (name) => page.getByRole("button", { name, exact: true });
+  async function menuAction(name, p = page) {
+    const menu = p.locator(".project-menu");
+    if (await menu.count()) {
+      if ((await menu.getAttribute("open")) === null)
+        await menu.locator("summary").click();
+    }
+    await p.getByRole("button", { name, exact: true }).click();
+  }
   const waitSave = async () => {
     await page.getByText("已自动保存", { exact: true }).waitFor();
   };
@@ -105,7 +116,10 @@ try {
   async function close() {
     const d = page.getByRole("dialog");
     if (await d.count())
-      await d.getByRole("button", { name: /^(关闭弹窗|返回画板)$/ }).click();
+      await d
+        .getByRole("button", { name: /^(关闭弹窗|返回画板)$/ })
+        .first()
+        .click();
   }
   async function stored(store, key) {
     return page.evaluate(
@@ -129,10 +143,7 @@ try {
   }
   async function snapshot() {
     const pending = page.waitForEvent("download");
-    await page
-      .locator(".top-toolbar")
-      .getByRole("button", { name: "导出项目", exact: true })
-      .click();
+    await menuAction("导出项目");
     const dl = await pending,
       stream = await dl.createReadStream(),
       parts = [];
@@ -189,7 +200,7 @@ try {
     await waitSave();
   }
   async function localOpen(name) {
-    await button("我的作品").click();
+    await menuAction("我的作品");
     await works()
       .locator(".work-open")
       .filter({ has: page.getByText(name, { exact: true }) })
@@ -197,7 +208,7 @@ try {
     await waitSave();
   }
   async function cloudSave(p = page, expected = 200) {
-    await p.getByRole("button", { name: "我的作品", exact: true }).click();
+    await menuAction("我的作品", p);
     const response = p.waitForResponse(
       (r) => r.request().method() === "PUT" && r.url().includes("/api/works/"),
     );
@@ -220,14 +231,14 @@ try {
   await generate();
   await generated();
   await page.getByLabel("作品名称").fill("作品 A");
-  await button("保存").click();
+  await menuAction("保存");
   await waitSave();
   const a = await snapshot();
   await upload(inputB, true);
   await generate();
   await generated();
   await page.getByLabel("作品名称").fill("作品 B");
-  await button("保存").click();
+  await menuAction("保存");
   await waitSave();
   const b = await snapshot();
   assert.notEqual(a.id, b.id);
@@ -244,7 +255,7 @@ try {
   );
   for (let i = 0; i < 2; i++) {
     await localOpen("作品 A");
-    await button("我的作品").click();
+    await menuAction("我的作品");
     await close();
     await page.reload();
     await waitSave();
@@ -255,7 +266,7 @@ try {
     ),
     beforeDates,
   );
-  await button("我的作品").click();
+  await menuAction("我的作品");
   await works()
     .locator(".work-open")
     .getByText("作品 B", { exact: true })
@@ -270,7 +281,7 @@ try {
     "点击上传A、同名拖放B生成后分别保存，刷新可分别打开；反复查看不改变排序/更新时间",
   );
   await localOpen("作品 B");
-  await button("图片转马赛克").click();
+  await menuAction("图片转马赛克");
   await generate(17);
   await generated();
   const regen = await snapshot();
@@ -333,7 +344,7 @@ try {
   pageB.setDefaultTimeout(20000);
   await pageB.goto(base, { waitUntil: "domcontentloaded" });
   await pageB.getByText("已自动保存", { exact: true }).waitFor();
-  await pageB.getByRole("button", { name: "我的作品", exact: true }).click();
+  await menuAction("我的作品", pageB);
   await pageB
     .locator(".cloud-works")
     .getByRole("button", { name: "打开", exact: true })
@@ -360,7 +371,7 @@ try {
     .filter({ hasText: "缺少此账号作品的同步版本" })
     .waitFor();
   mark("同ID导入文件不继承内存或伪造的同步版本，明确428恢复/另存提示");
-  await button("我的作品").click();
+  await menuAction("我的作品");
   await works()
     .locator(".cloud-works")
     .getByRole("button", { name: "打开", exact: true })
@@ -393,7 +404,7 @@ try {
   await waitSave();
   assert.equal((await cloudSave(page, 428)).expectedUpdated, undefined);
   mark("服务来源不匹配的已存同步版本不被采用");
-  await button("我的作品").click();
+  await menuAction("我的作品");
   await works().getByRole("button", { name: "退出登录", exact: true }).click();
   await close();
   await waitSave();

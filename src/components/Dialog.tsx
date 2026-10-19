@@ -1,6 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { X } from "@phosphor-icons/react";
-import { BRAND } from "../model";
 export default function Dialog({
   title,
   children,
@@ -59,9 +58,6 @@ export default function Dialog({
       >
         <header>
           <div>
-            <span className="eyebrow" data-brand={BRAND.english.toUpperCase()}>
-              {BRAND.english.toUpperCase()}
-            </span>
             <h2>{title}</h2>
           </div>
           <button

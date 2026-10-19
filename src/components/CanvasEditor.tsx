@@ -108,7 +108,10 @@ export default function CanvasEditor({
     ),
     nativeWidth = Math.round(marginNative * 2 + p.width * baseCell),
     nativeHeight = Math.round(marginNative * 2 + p.height * baseCell),
-    displayBase = innerWidth <= 620 ? 620 : innerWidth <= 980 ? 680 : 820,
+    displayBase = Math.max(
+      80,
+      Math.min(size.w - 64, ((size.h - 64) * nativeWidth) / nativeHeight),
+    ),
     displayWidth = displayBase * zoom,
     ratio = displayWidth / nativeWidth,
     cell = baseCell * ratio,
@@ -120,20 +123,12 @@ export default function CanvasEditor({
   useEffect(() => {
     if (fitKey) {
       setPan({ x: 0, y: 0 });
-      setZoom(
-        Math.max(
-          0.1,
-          Math.min(
-            (size.w - 36) / displayBase,
-            (size.h - 36) / ((nativeHeight * displayBase) / nativeWidth),
-          ),
-        ),
-      );
+      setZoom(1);
     }
   }, [fitKey]);
   const origin = {
-    x: Math.max(18, (size.w - displayWidth) / 2) + pan.x + margin,
-    y: 18 + pan.y + margin,
+    x: (size.w - displayWidth) / 2 + pan.x + margin,
+    y: (size.h - nativeHeight * ratio) / 2 + pan.y + margin,
   };
   const cropDrag = useRef<{
     edge: string;
@@ -391,17 +386,30 @@ export default function CanvasEditor({
         mx = e.clientX - rect.left,
         my = e.clientY - rect.top,
         factor = next / zoom;
-      const left = Math.max(18, (size.w - displayWidth) / 2) + pan.x,
-        newLeft = Math.max(18, (size.w - displayBase * next) / 2);
+      const left = (size.w - displayWidth) / 2 + pan.x,
+        top = (size.h - nativeHeight * ratio) / 2 + pan.y,
+        newLeft = (size.w - displayBase * next) / 2,
+        newTop =
+          (size.h - (nativeHeight * displayBase * next) / nativeWidth) / 2;
       setPan({
         x: mx - (mx - left) * factor - newLeft,
-        y: my - (my - 18 - pan.y) * factor - 18,
+        y: my - (my - top) * factor - newTop,
       });
       setZoom(next);
     };
     el.addEventListener("wheel", wheel, { passive: false });
     return () => el.removeEventListener("wheel", wheel);
-  }, [zoom, setZoom, size, pan, displayWidth, displayBase]);
+  }, [
+    zoom,
+    setZoom,
+    size,
+    pan,
+    displayWidth,
+    displayBase,
+    nativeWidth,
+    nativeHeight,
+    ratio,
+  ]);
   useEffect(() => {
     const el = canvas.current;
     if (!el) return;
@@ -412,8 +420,8 @@ export default function CanvasEditor({
     g.scale(dpr, dpr);
     g.clearRect(0, 0, size.w, size.h);
     g.fillStyle = "#ffffff";
-    g.shadowColor = "#17392e14";
-    g.shadowBlur = 20;
+    g.shadowColor = "#00000030";
+    g.shadowBlur = 8;
     g.fillRect(
       origin.x - margin,
       origin.y - margin,
@@ -541,7 +549,7 @@ export default function CanvasEditor({
       }
     }
     if (selection.size) {
-      g.fillStyle = "#15a48855";
+      g.fillStyle = "#b5a6f355";
       for (const i of selection)
         g.fillRect(
           origin.x + (i % p.width) * cell,
@@ -549,7 +557,7 @@ export default function CanvasEditor({
           cell,
           cell,
         );
-      g.strokeStyle = "#087e67";
+      g.strokeStyle = "#b5a6f3";
       g.lineWidth = 1;
       for (const i of selection) {
         const x = i % p.width,
@@ -591,7 +599,7 @@ export default function CanvasEditor({
       }
     }
     if (path.length) {
-      g.strokeStyle = "#09866f";
+      g.strokeStyle = "#b5a6f3";
       g.setLineDash([5, 3]);
       g.lineWidth = 2;
       g.beginPath();
@@ -613,22 +621,22 @@ export default function CanvasEditor({
       g.setLineDash([]);
     }
     g.restore();
-    if (p.grid.coordinates && cell >= 7 && p.view !== "iron") {
-      g.fillStyle = "#536176";
-      g.font = `${10 * ratio}px Inter, sans-serif`;
+    if (p.grid.coordinates && cell >= 1 && p.view !== "iron") {
+      g.fillStyle = "#a8afba";
+      g.font = "10px system-ui, sans-serif";
       g.textAlign = "center";
       g.textBaseline = "middle";
-      const step = 5;
+      const step = Math.max(5, Math.ceil(32 / cell / 5) * 5);
       for (let x = 0; x < p.width; x += step) {
         const px = origin.x + (x + 0.5) * cell;
         if (px < 0 || px > size.w) continue;
-        g.fillText(String(x + 1), px, origin.y - margin + 14 * ratio);
+        g.fillText(String(x + 1), px, origin.y - margin - 12);
       }
       g.textAlign = "center";
       for (let y = 0; y < p.height; y += step) {
         const py = origin.y + (y + 0.5) * cell;
         if (py < 0 || py > size.h) continue;
-        g.fillText(String(y + 1), origin.x - margin + 14 * ratio, py);
+        g.fillText(String(y + 1), origin.x - margin - 15, py);
       }
     }
   }, [p, size, zoom, pan, selection, path, loaded]);
@@ -637,6 +645,9 @@ export default function CanvasEditor({
       <canvas
         ref={canvas}
         data-testid="editor-canvas"
+        data-grid-x={origin.x}
+        data-grid-y={origin.y}
+        data-cell-size={cell}
         aria-label="拼豆编辑画布"
         style={{
           width: size.w,

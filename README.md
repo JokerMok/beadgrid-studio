@@ -1,6 +1,6 @@
 # 豆格工坊 · BeadGrid Studio
 
-本地拼豆制图、编辑、图纸导出与用豆采购清单工作台，当前版本1.2.0。采用 React / TypeScript / Vite，配套 Node.js + SQLite 账号服务。转换、编辑和导出均在浏览器本地执行。
+本地拼豆制图、编辑、图纸导出与用豆采购清单工作台，当前版本1.3.0。采用 React / TypeScript / Vite，配套 Node.js + SQLite 账号服务。转换、编辑和导出均在浏览器本地执行。
 
 仓库：[JokerMok/beadgrid-studio](https://github.com/JokerMok/beadgrid-studio)。本工程此前以“星豆绘独立本地工作台”开发，交互与算法来源仍在差异说明及色卡来源中保留，不请求原站接口、不连接原站账号或会员系统。改名保留IndexedDB名称、色卡版本和项目文件格式，既有作品可继续打开。
 
@@ -16,15 +16,23 @@ PORT=4173 npm start
 
 打开 **http://127.0.0.1:4173/**。服务需要保持运行。不要直接双击 `dist/index.html`，模块与账号接口需要 HTTP 服务。
 
-从旧版页面升级可打开 **http://127.0.0.1:4173/?v=1.2.0**，确保加载新构建。
+从旧版页面升级可打开 **http://127.0.0.1:4173/?v=1.3.0**，确保加载新构建。
 
 开发：`npm run dev`，前端 http://127.0.0.1:5173/ ，账号服务 http://127.0.0.1:8787/ 。开发入口会将 `/api` 代理至配套服务。修改后端后重启开发进程。
 
 临时公网外测：`npm run public:start`；查看 `npm run public:status`，停止 `npm run public:stop`，重新创建 `npm run public:restart`。优先复用4173正确生产服务，最新地址及日志在 `.local-public/`。只管理本项目登记的进程，不修改其他Tunnel。详见 [PUBLIC_PREVIEW.md](PUBLIC_PREVIEW.md)。
 
+## v1.3界面
+
+采用用户指定的深色与淡紫规范，设计变量和组件职责见[DESIGN.md](DESIGN.md)。上传、清单、导出、颜色、作品、登录和高级工具共用主题；打印图纸与采购清单图片仍保持适合打印的白底。未改色卡、转换算法、项目格式或账号数据模型。
+
+作品菜单提供保存、我的作品、新建、项目导入导出和重新生成；左栏“扩展”提供原有识别、底图、替色、禁色及高级处理；底部“画布操作”提供变换、裁剪、网格、坐标和色号。AI入口保留禁用状态，更多工具仍显示待开发。
+
+2026-10-19本地集中回归：1488×1056与1440×1024桌面、390×844手机模拟及820×1180平板模拟检查通过。真实图片上传、连续画笔、橡皮、撤销重做、缩放后落笔、保存刷新、清单CSV/图片及图纸PNG实际下载通过；应用主题未改变画布RGB和白底导出。上一轮作品ID、同步版本和排序浏览器回归再次通过。截图与下载证据保存在本地`verification/dark-ui/`；未做实体手机验收，未收到本轮设计图附件，不能声称逐像素对照完成。
+
 ## 已有能力
 
-- 按当前原站实测修正的工作台：品牌、作品名、保存状态、操作栏、工具条、视图、板子设置、调色板、实时用量、导出预览。
+- 深色工作台：80px单行顶栏、72px分组工具栏、真实Canvas画布、底部统计与缩放、316px属性／色卡面板；手机和平板使用属性抽屉。深色主题与淡紫强调色覆盖所有业务弹窗。
 - PNG / JPEG / WebP 点击与拖放导入；自由框选裁剪、完整置入、等比缩放、位置与透明区域设置，裁剪八把手、选框与视图移动。16～1000格独立宽高，52 / 78 / 104 / 120预设。
 - 明确版本的221色色卡；格内加权采样、RGB最近色、按频次减色、浅色边缘连通清理；公开规则的杂色合并、边缘强化与小图处理。HTML图片构图后交给Worker采样匹配，可取消。
 - 手型、缩放、1/2/3/5格画笔、连续笔画、橡皮、吸管、四邻接填充、套索、矩形选区、魔法选取、选区填色与清除；单色替换、自选色卡、禁色重映射。
@@ -106,7 +114,7 @@ CSV为UTF-8 BOM、CRLF、完整引号转义，含作品、规格、每色色号�
 | `src/storage.ts` | IndexedDB、图片解码和文件下载 |
 | `server/index.mjs` | 独立认证、SQLite与作品接口 |
 
-界面和导出图纸的品牌文字在 `src/model.ts` 的 `BRAND`；浏览器标题在 `index.html`。Logo为可替换的图标组件，主题在 `src/styles.css` 与 `workbench-alignment.css` 的根变量。默认示例“林间小屋”为本工程原创像素图，不包含原站默认人物作品。未整体引入开源候选项目，也未复制原站打包脚本或样式作为运行工程。数据来源与第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+界面和导出图纸的品牌文字在 `src/model.ts` 的 `BRAND`；浏览器标题在 `index.html`。Logo为可替换的图标组件，主题在 `src/styles.css` 的根变量；工作台布局在`src/workbench.css`，专用弹窗布局在`src/editor-dialogs.css`，采购界面在`src/bead-list.css`。默认示例“林间小屋”为本工程原创像素图，不包含原站默认人物作品。未整体引入开源候选项目，也未复制原站打包脚本或样式作为运行工程。数据来源与第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 仓库不提交本机数据库、账号会话、`.env`、Tunnel记录、运行日志、上传原图、历史截图或构建缓存；`dist/`通过构建生成。单元测试所需的最小色卡数据和去掉原图的旧项目网格保存在`tests/fixtures/`，`npm test`不依赖本机归档。
 
@@ -118,7 +126,7 @@ CSV为UTF-8 BOM、CRLF、完整引号转义，含作品、规格、每色色号�
 npm run check
 npm run build -- --outDir .local-public/review-build
 node --import tsx --test tests/core.test.ts tests/bead-list.test.ts tests/cloud-sync.test.ts tests/server-regressions.test.ts
-node scripts/review-fixes-regression.mjs
+TEST_BUILD_DIR=.local-public/review-build node scripts/review-fixes-regression.mjs
 ```
 
 浏览器脚本会创建并清理独立临时服务和数据，不连接现有用户数据库。生成取消/失败使用浏览器侧故障注入；代理检查通过本地临时服务模拟可信/不可信连接，不表示已重新部署真实Tunnel。
@@ -126,12 +134,12 @@ node scripts/review-fixes-regression.mjs
 ```sh
 npm test
 npx playwright install chromium
-TEST_URL=http://127.0.0.1:4173 npm run test:browser
+npm run test:browser
 TEST_URL=http://127.0.0.1:4173 node scripts/large-export-regression.mjs
 TEST_URL=http://127.0.0.1:4173 node scripts/final-affected-regression.mjs
 ```
 
-上述浏览器脚本为已有开发记录，部分脚本及`npm run test:parity`需要原开发目录的`verification/`逆向快照、上传素材或截图。这些本地归档未提交到GitHub，单独克隆仓库不含历史对照证据。需要使用时提供自己的素材并恢复对应归档；常规启动、构建及`npm test`无需归档。运行应用本身不加载逆向脚本。
+`npm run test:browser`使用临时服务、数据库和独立浏览器检查作品与账号保存闭环；默认测试dist，可用TEST_BUILD_DIR指定隔离构建。其余v1.1浏览器脚本为历史开发记录，依赖旧布局，不能代表v1.3验收。部分历史脚本及`npm run test:parity`需要原开发目录的`verification/`逆向快照、上传素材或截图。这些本地归档未提交到GitHub，单独克隆仓库不含历史对照证据。需要使用时提供自己的素材并恢复对应归档；常规启动、构建及`npm test`无需归档。运行应用本身不加载逆向脚本。
 
 v1.2清单验证见 `verification/bead-list-20261017/results.json`、真实下载成品及桌面/手机截图。独立解码bamboo旧文件得到96色、22400颗；上传透明图后320有效格、704空格；替色、擦除、裁剪、撤销重做和项目导入/刷新已实际操作。页面、原生粘贴核对的文字、CSV和PNG共享清单数据一致，10%备用建议24692颗。类型/构建与有关数据测试通过；未做实体手机、所有浏览器或实物采购验收。
 

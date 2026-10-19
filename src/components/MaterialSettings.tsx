@@ -11,11 +11,13 @@ export default function MaterialSettings({
   onChange,
   width,
   height,
+  compact = false,
 }: {
   settings: Settings;
   onChange: (value: Partial<Settings>) => void;
   width: number;
   height: number;
+  compact?: boolean;
 }) {
   const material = verifiedMaterial(settings.materialSpec);
   return (
@@ -50,9 +52,18 @@ export default function MaterialSettings({
       <p className="micro">
         {estimatedSize(width, height, material?.beadSizeMm)}
       </p>
-      <p className="micro">
-        色号已核对公开仓库；2.6mm有商家规格资料支持。屏幕颜色仅供参考。
-      </p>
+      {compact ? (
+        <details className="material-evidence">
+          <summary>色卡与尺寸依据</summary>
+          <p className="micro">
+            色号已核对公开仓库；2.6mm有商家规格资料支持。屏幕颜色仅供参考，未做实物校色。
+          </p>
+        </details>
+      ) : (
+        <p className="micro">
+          色号已核对公开仓库；2.6mm有商家规格资料支持。屏幕颜色仅供参考。
+        </p>
+      )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./styles.css";
-import "./workbench-alignment.css";
+import "./workbench.css";
+import "./editor-dialogs.css";
 import "./bead-list.css";
 createRoot(document.getElementById("root")!).render(<App />);
