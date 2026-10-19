@@ -1,4 +1,5 @@
 import { deserialize, serialize, type Project } from "./model";
+import { validCloudSync } from "./cloud-sync";
 const open = () =>
   new Promise<IDBDatabase>((resolve, reject) => {
     const r = indexedDB.open("xing-local-v1", 1);
@@ -36,18 +37,31 @@ async function transaction<T>(
     };
   });
 }
+function localSnapshot(p: Project) {
+  return { ...serialize(p), cloudSync: validCloudSync(p.cloudSync, p.id) };
+}
+function restoreLocal(raw: unknown): Project {
+  const project = deserialize(raw);
+  return {
+    ...project,
+    cloudSync: validCloudSync(
+      (raw as { cloudSync?: unknown }).cloudSync,
+      project.id,
+    ),
+  };
+}
 export const saveDraft = (p: Project) =>
-  transaction("meta", "readwrite", (s) => s.put(serialize(p), "draft"));
+  transaction("meta", "readwrite", (s) => s.put(localSnapshot(p), "draft"));
 export const loadDraft = async () => {
   const raw = await transaction("meta", "readonly", (s) => s.get("draft"));
-  return raw ? deserialize(raw) : null;
+  return raw ? restoreLocal(raw) : null;
 };
 export const saveLocal = (p: Project) =>
-  transaction("projects", "readwrite", (s) => s.put(serialize(p)));
+  transaction("projects", "readwrite", (s) => s.put(localSnapshot(p)));
 export const listLocal = async () => {
   const all = await transaction("projects", "readonly", (s) => s.getAll());
   return all
-    .map((p) => deserialize(p))
+    .map((p) => restoreLocal(p))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 };
 export const removeLocal = (id: string) =>

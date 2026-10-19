@@ -43,6 +43,8 @@ PORT=4173 npm start
 
 本地草稿每650ms写入一次。新建、重新生成或打开其他作品前，当前作品先保存到本地列表。撤销历史最多50步，同时限制为32MB网格数据。多标签同时编辑时，自动草稿以最后写入为准；重要作品请保存命名副本或导出项目文件。
 
+上传新素材并生成成功后创建新作品ID，原作品单独保留；当前作品调整参数后重新生成沿用原ID，取消或失败不替换作品。列表读取保留原更新时间，缺失或无效日期按未知时间（0）排序；仅打开作品不修改日期。
+
 图片输入限制32MB、8000万像素，原始data URL不超过1000万字符。保存原文件字节，不先缩到2400px或转成WebP；超过存储上限明确拒绝，避免同输入在转换前已经变成另一张图。
 
 普通路径的近白保留阈值为245，浅色背景四角判定仍为235；采样RGB取整并写入Uint8ClampedArray，alpha按有效基础权重计算。默认转换与图纸调节分开。`src/conversion-core.ts` 是可单独核对的算法模块；`prepare-image.ts` 使用HTML图片解码，避免ImageBitmap重采样路径改变结果。Worker负责采样、匹配、减色和后处理。
@@ -74,10 +76,19 @@ CSV为UTF-8 BOM、CRLF、完整引号转义，含作品、规格、每色色号�
 - SQLite默认位置 `data/studio.sqlite`，含用户、会话和作品。账号作品在此配套服务器保存；本地作品属于当前浏览器，二者独立。
 - 密码使用随机盐和scrypt，服务端保存哈希；会话只保存token哈希，Cookie设置HttpOnly / SameSite=Strict，7天有效。所有作品读取、更新、删除均限定当前用户，写入校验网格。每账号最多50个作品。
 - 服务端拒绝跨来源写入，并限制认证请求频率。更新作品带服务端版本戳，冲突返回409，用户可重新打开或另存副本。
+- 已知同步版本与服务来源、账号ID及作品ID一起保存在本机草稿/作品快照中，不包含在导出的`.bead.json`中。刷新后恢复匹配版本；不同窗口各自保留已知版本，不在保存前获取新版本覆盖。旧草稿或导入文件缺少同步版本时，服务端返回428，需重新打开账号作品或另存副本；真正的版本不一致仍返回409。
 - 可复制 `.env.example` 为 `.env`。本机默认只监听127.0.0.1。需要局域网或部署时设置 `HOST=0.0.0.0`。HTTPS反向代理须保留Host；部署时设 `COOKIE_SECURE=1`，需要时设置精确的 `ALLOWED_ORIGINS`。
 - 部署完整应用需要Node服务与持久化磁盘，仅上传 `dist/` 到静态托管无法提供账号接口。Docker示例：`docker build -t beadgrid-studio .`，再运行 `docker run -p 8787:8787 -v beadgrid-data:/app/data beadgrid-studio`。Docker配置已提供，未在本轮实际部署。
 - 备份数据库应在停服后复制整个 `data/`，或使用SQLite在线备份工具；不要只复制正在写入的主库文件而遗漏WAL。
 - 本次未包含会员支付、销售、邮件服务、密码找回或公网部署。
+
+### 可信代理与认证限流
+
+默认`TRUSTED_PROXIES`为空，按直连地址限流，忽略伪造的转发头。Cloudflare Tunnel在同机运行时配置`TRUSTED_PROXIES=127.0.0.1/32,::1/128`及`CLIENT_IP_HEADER=cf-connecting-ip`，仅来自这些实际socket地址且携带合法单一CF-Connecting-IP的请求按访客IP计数；缺失或非法头回退到直连地址，不采用X-Forwarded-For绕过。登录与注册共享同一访客每10分钟60次额度。
+
+必须保持源服务仅监听127.0.0.1，并把本机其他进程视为此信任边界内。若代理来自容器或其他机器，填写实际代理的精确IP/CIDR，并由防火墙限制源站访问，不要信任全部地址、任意跳数或整个私网。其他反向代理可设置`CLIENT_IP_HEADER=x-forwarded-for`；代理须清理或正确追加转发链，Express从最近的非可信跳确定客户端。原Host/Origin校验、Cookie和作品所有权校验保留。
+
+`public:start`自建服务时会配置本机cloudflared边界；复用的既有服务不会被在线改配置，启用修复需按上述配置重启服务。本轮未重启或重新部署公网Tunnel。规则依据：[Express可信代理](https://expressjs.com/en/guide/behind-proxies/)、[Cloudflare请求头](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip)。
 
 ## 源码入口
 
@@ -100,6 +111,17 @@ CSV为UTF-8 BOM、CRLF、完整引号转义，含作品、规格、每色色号�
 仓库不提交本机数据库、账号会话、`.env`、Tunnel记录、运行日志、上传原图、历史截图或构建缓存；`dist/`通过构建生成。单元测试所需的最小色卡数据和去掉原图的旧项目网格保存在`tests/fixtures/`，`npm test`不依赖本机归档。
 
 ## 验证与对照
+
+4项数据与代理修复的定向回归（临时数据库、独立浏览器；不更新当前公网构建）：
+
+```sh
+npm run check
+npm run build -- --outDir .local-public/review-build
+node --import tsx --test tests/core.test.ts tests/bead-list.test.ts tests/cloud-sync.test.ts tests/server-regressions.test.ts
+node scripts/review-fixes-regression.mjs
+```
+
+浏览器脚本会创建并清理独立临时服务和数据，不连接现有用户数据库。生成取消/失败使用浏览器侧故障注入；代理检查通过本地临时服务模拟可信/不可信连接，不表示已重新部署真实Tunnel。
 
 ```sh
 npm test

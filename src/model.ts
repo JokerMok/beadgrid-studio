@@ -1,4 +1,5 @@
 import colors from "./palette.json";
+import type { CloudSync } from "./cloud-sync";
 import legacyCodes from "./legacy-palette-codes.json";
 import {
   supportedMaterial,
@@ -83,6 +84,7 @@ export type Project = {
   grid: GridOptions;
   reference?: Reference;
   updatedAt: number;
+  cloudSync?: CloudSync;
 };
 export const defaults = (width = 52, height = 52): Settings => ({
   smallCleanup: false,
@@ -345,7 +347,13 @@ export function deserialize(raw: unknown): Project {
         : "#29a88f",
     },
     reference,
-    updatedAt: Date.now(),
+    // Unknown dates sort last and remain stable across reads.
+    updatedAt:
+      Number.isSafeInteger(v.updatedAt) &&
+      v.updatedAt >= 0 &&
+      v.updatedAt <= 8.64e15
+        ? v.updatedAt
+        : 0,
   };
 }
 export function transform(

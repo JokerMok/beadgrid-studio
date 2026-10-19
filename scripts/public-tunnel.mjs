@@ -54,7 +54,13 @@ function detached(binary, args, log) {
   try {
     const child = spawn(binary, args, {
       cwd: root, detached: true, stdio: ["ignore", fd, fd],
-      env: { ...process.env, HOST: "127.0.0.1", PORT: String(port) },
+      env: {
+        ...process.env, HOST: "127.0.0.1", PORT: String(port),
+        ...(args[0] === path.join(root, "server/index.mjs") ? {
+          TRUSTED_PROXIES: process.env.TRUSTED_PROXIES || "127.0.0.1/32,::1/128",
+          CLIENT_IP_HEADER: "cf-connecting-ip",
+        } : {}),
+      },
     });
     // No shell, broad process matching, global Cloudflare config or service install.
     child.on("error", (e) => note(`spawn failed: ${e.message}`));

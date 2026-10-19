@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isIP } from "node:net";
 if (fs.existsSync(".env")) process.loadEnvFile(".env");
 const scrypt = promisify(scryptCb),
   root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
@@ -21,6 +22,32 @@ db.exec(`CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,username TEXT N
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS works(id TEXT NOT NULL,user_id INTEGER NOT NULL REFERENCES users(id),title TEXT NOT NULL,data TEXT NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(id,user_id));`);
 const app = express();
+const trustedProxies = (process.env.TRUSTED_PROXIES || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const clientIpHeader = process.env.CLIENT_IP_HEADER || "cf-connecting-ip";
+if (!["cf-connecting-ip", "x-forwarded-for"].includes(clientIpHeader))
+  throw Error("CLIENT_IP_HEADER只能为cf-connecting-ip或x-forwarded-for");
+// Exact proxy addresses/CIDRs only; direct connections trust no forwarding headers.
+app.set("trust proxy", trustedProxies.length ? trustedProxies : false);
+function clientAddress(req) {
+  const peer = req.socket.remoteAddress;
+  const trusted = app.get("trust proxy fn")(peer, 0);
+  const forwarded = req.get("cf-connecting-ip");
+  const address =
+    clientIpHeader === "cf-connecting-ip"
+      ? trusted && isIP(forwarded || "")
+        ? forwarded
+        : peer
+      : req.ip;
+  if (!isIP(address || "") || address.includes("%")) return peer;
+  if (address.startsWith("::ffff:") && isIP(address.slice(7)) === 4)
+    return address.slice(7);
+  return isIP(address) === 6
+    ? new URL(`http://[${address}]/`).hostname.slice(1, -1)
+    : address;
+}
 app.disable("x-powered-by");
 app.use((req, res, next) => {
   res.set({
@@ -77,7 +104,7 @@ const auth = (req, res, next) =>
 const attempts = new Map();
 function rate(req, res, next) {
   const now = Date.now(),
-    key = req.ip;
+    key = clientAddress(req);
   let a = attempts.get(key);
   if (!a || now - a.start > 600000) {
     a = { start: now, count: 0 };
@@ -230,9 +257,24 @@ app.get("/api/works/:id", auth, (req, res) => {
     .prepare("SELECT data,updated FROM works WHERE id=? AND user_id=?")
     .get(req.params.id, req.user.id);
   if (!w) return res.status(404).json({ error: "作品不存在或无权访问" });
-  res.json({ project: JSON.parse(w.data), updated: w.updated });
+  res.json({
+    project: JSON.parse(w.data),
+    updated: w.updated,
+    userId: req.user.id,
+  });
 });
 app.put("/api/works/:id", auth, (req, res) => {
+  // A login change in another tab changes the shared cookie, not this tab's UI.
+  if (
+    req.body.expectedUserId !== undefined &&
+    req.body.expectedUserId !== req.user.id
+  )
+    return res
+      .status(412)
+      .json({
+        error: "登录账号已改变，请刷新页面后重新保存",
+        code: "ACCOUNT_CHANGED",
+      });
   let v;
   try {
     v = validateProject(req.body.project);
@@ -243,6 +285,16 @@ app.put("/api/works/:id", auth, (req, res) => {
   const existing = db
     .prepare("SELECT updated FROM works WHERE id=? AND user_id=?")
     .get(v.id, req.user.id);
+  if (
+    existing &&
+    (!Number.isSafeInteger(req.body.expectedUpdated) ||
+      req.body.expectedUpdated < 1)
+  )
+    return res.status(428).json({
+      error:
+        "缺少此账号作品的同步版本，请在我的作品中重新打开账号作品，或另存副本后保存",
+      code: "SYNC_VERSION_REQUIRED",
+    });
   if (existing && req.body.expectedUpdated !== existing.updated)
     return res
       .status(409)
@@ -279,16 +331,14 @@ app.get("/{*path}", (_, res) => {
 });
 app.use((err, req, res, next) => {
   console.error("request error:", err.type || err.name);
-  res
-    .status(err.status || 500)
-    .json({
-      error:
-        err.type === "entity.too.large"
-          ? "项目超过16MB，请缩小原图"
-          : err instanceof SyntaxError
-            ? "请求JSON无效"
-            : "服务器处理失败，请稍后重试",
-    });
+  res.status(err.status || 500).json({
+    error:
+      err.type === "entity.too.large"
+        ? "项目超过16MB，请缩小原图"
+        : err instanceof SyntaxError
+          ? "请求JSON无效"
+          : "服务器处理失败，请稍后重试",
+  });
 });
 const host = process.env.HOST || "127.0.0.1",
   port = Number(process.env.PORT || 8787);

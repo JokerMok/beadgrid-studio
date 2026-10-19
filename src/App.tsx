@@ -81,6 +81,7 @@ import {
 } from "./storage";
 import { makeDemo } from "./demo";
 import { api } from "./api";
+import { cloudSyncKey, validCloudSync, type CloudSync } from "./cloud-sync";
 import {
   adjustPattern,
   enhanceEdges,
@@ -150,6 +151,7 @@ export default function App() {
       source: string;
       name: string;
       initial?: Settings;
+      intent: "new" | "regenerate";
     } | null>(null),
     [toast, setToast] = useState(""),
     [busy, setBusy] = useState<{ progress: number; message: string } | null>(
@@ -203,7 +205,32 @@ export default function App() {
     projectInput = useRef<HTMLInputElement>(null),
     referenceInput = useRef<HTMLInputElement>(null),
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
-    cloudVersions = useRef(new Map<string, number>());
+    cloudVersions = useRef(new Map<string, CloudSync>());
+  const serviceSource = window.location.origin + "/api";
+  const activeUser = useRef(user);
+  activeUser.current = user;
+  function rememberSync(p: Project) {
+    const sync = validCloudSync(p.cloudSync, p.id);
+    if (sync && sync.source === serviceSource) {
+      const key = cloudSyncKey(sync.source, sync.userId, p.id);
+      if (!cloudVersions.current.has(key)) cloudVersions.current.set(key, sync);
+    }
+  }
+  function withSync(p: Project): Project {
+    const account = activeUser.current;
+    return {
+      ...p,
+      cloudSync: account
+        ? cloudVersions.current.get(
+            cloudSyncKey(serviceSource, account.id, p.id),
+          )
+        : p.cloudSync,
+    };
+  }
+  function clearActiveSync() {
+    cloudVersions.current.clear();
+    setProject((p) => ({ ...p, cloudSync: undefined }));
+  }
   const counts = useMemo(() => usage(project.cells), [project.cells]),
     total = counts.reduce((s, v) => s + v[1], 0),
     countMap = new Map(counts),
@@ -228,7 +255,7 @@ export default function App() {
     setHistoryTick((t) => t + 1);
   }
   function change(p: Project) {
-    setProject({ ...p, updatedAt: Date.now() });
+    setProject(withSync({ ...p, updatedAt: Date.now() }));
   }
   function commit(p: Project, keepSelection = false) {
     checkpoint();
@@ -270,6 +297,7 @@ export default function App() {
     loadDraft()
       .then((p) => {
         if (p) {
+          rememberSync(p);
           setProject(p);
           notify("已恢复上次的本地草稿");
         }
@@ -286,7 +314,7 @@ export default function App() {
     const revision = ++draftRevision.current;
     setSaved("正在保存");
     const timer = setTimeout(() => {
-      saveDraft(project)
+      saveDraft(withSync(project))
         .then(() => {
           if (revision === draftRevision.current) setSaved("已自动保存");
         })
@@ -296,7 +324,7 @@ export default function App() {
         });
     }, 650);
     return () => clearTimeout(timer);
-  }, [project, booted]);
+  }, [project, booted, user]);
   useEffect(() => {
     setBoardW(project.width);
     setBoardH(project.height);
@@ -356,7 +384,8 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", guard);
   }, [saved]);
   useEffect(() => {
-    const replace = (e: Event) => setIncoming((e as CustomEvent).detail);
+    const replace = (e: Event) =>
+      setIncoming({ ...(e as CustomEvent).detail, intent: "new" });
     window.addEventListener("xing-replace-upload", replace);
     return () => window.removeEventListener("xing-replace-upload", replace);
   }, []);
@@ -371,7 +400,9 @@ export default function App() {
   }, []);
   async function saveNamed() {
     try {
-      await saveLocal(current.current);
+      const p = withSync({ ...current.current, updatedAt: Date.now() });
+      await saveLocal(p);
+      setProject(p);
       notify("已保存到本地作品");
     } catch (e) {
       notify("保存失败：" + errText(e));
@@ -381,15 +412,26 @@ export default function App() {
     if (!file) return;
     try {
       const source = await readImage(file);
-      setIncoming({ source, name: file.name, initial: defaults(104, 104) });
+      setIncoming({
+        source,
+        name: file.name,
+        initial: defaults(104, 104),
+        intent: "new",
+      });
       setMobileSide(false);
     } catch (e) {
       notify(errText(e));
     }
   }
-  async function generate(source: string, name: string, s: Settings) {
+  async function generate(
+    source: string,
+    name: string,
+    s: Settings,
+    intent: "new" | "regenerate",
+  ) {
+    const base = current.current;
     try {
-      await saveLocal(current.current);
+      await saveLocal(withSync(base));
     } catch (e) {
       notify("无法备份当前作品：" + errText(e));
       return;
@@ -414,9 +456,11 @@ export default function App() {
       "正在生成拼豆图…",
       { raster, settings: s },
       (data) => {
-        const p = current.current;
+        const p = base;
         commit({
           ...p,
+          id: intent === "new" ? crypto.randomUUID() : p.id,
+          cloudSync: intent === "new" ? undefined : p.cloudSync,
           source,
           sourceName: name,
           width: s.width,
@@ -424,7 +468,7 @@ export default function App() {
           cells: data.cells,
           settings: s,
           name:
-            source === p.source
+            intent === "regenerate"
               ? p.name
               : name.replace(/\.[^.]+$/, "") || p.name,
           view: "beads",
@@ -543,14 +587,34 @@ export default function App() {
     setNetworkBusy(true);
     try {
       const p = current.current;
+      const account = user;
+      const key = cloudSyncKey(serviceSource, account.id, p.id);
       const result = await api("/works/" + p.id, {
         method: "PUT",
         body: JSON.stringify({
           project: serialize(p),
-          expectedUpdated: cloudVersions.current.get(p.id),
+          expectedUserId: account.id,
+          expectedUpdated: cloudVersions.current.get(key)?.updated,
         }),
       });
-      cloudVersions.current.set(p.id, result.updated);
+      if (activeUser.current?.id === account.id) {
+        cloudVersions.current.set(key, {
+          source: serviceSource,
+          userId: account.id,
+          projectId: p.id,
+          updated: result.updated,
+        });
+        const next = withSync(current.current);
+        setProject(next);
+        try {
+          await saveDraft(next);
+        } catch {
+          notify(
+            "账号保存成功，但本机同步信息保存失败；下次请重新打开账号作品后再保存",
+          );
+          return;
+        }
+      }
       notify("作品已保存到独立服务");
     } catch (e) {
       notify(errText(e));
@@ -558,10 +622,19 @@ export default function App() {
       setNetworkBusy(false);
     }
   }
-  async function openProject(p: Project) {
+  async function openProject(p: Project, imported = false) {
     try {
-      await saveLocal(current.current);
-      commit(p);
+      await saveLocal(withSync(current.current));
+      // Opening a snapshot adopts its own base version, never a newer stamp
+      // remembered while editing another snapshot with the same project ID.
+      for (const [key, sync] of cloudVersions.current)
+        if (sync.projectId === p.id) cloudVersions.current.delete(key);
+      if (imported) p = { ...p, cloudSync: undefined };
+      else rememberSync(p);
+      checkpoint();
+      setProject(withSync(p));
+      setSelection(new Set());
+      setCropActive(false);
       setModal(null);
       setZoom(1);
     } catch (e) {
@@ -603,11 +676,16 @@ export default function App() {
       return;
     }
     if (project.source) {
-      generate(project.source, project.sourceName || project.name, {
-        ...project.settings,
-        width: boardW,
-        height: boardH,
-      });
+      generate(
+        project.source,
+        project.sourceName || project.name,
+        {
+          ...project.settings,
+          width: boardW,
+          height: boardH,
+        },
+        "regenerate",
+      );
       return;
     }
     const cells = new Int16Array(boardW * boardH).fill(-1);
@@ -707,7 +785,7 @@ export default function App() {
           if (!file) return;
           try {
             if (file.size > 16e6) throw Error("项目文件超过16MB");
-            await openProject(deserialize(JSON.parse(await file.text())));
+            await openProject(deserialize(JSON.parse(await file.text())), true);
           } catch (e) {
             notify("项目导入失败：" + errText(e));
           }
@@ -745,7 +823,9 @@ export default function App() {
       <header className="app-header">
         <div className="header-identity">
           <a className="brand" href="#" onClick={(e) => e.preventDefault()}>
-            <strong>{BRAND.english}（{BRAND.name}）</strong>
+            <strong>
+              {BRAND.english}（{BRAND.name}）
+            </strong>
           </a>
           <div className="project-title">
             <input
@@ -817,6 +897,7 @@ export default function App() {
                 setIncoming({
                   source: project.source,
                   name: project.sourceName || project.name,
+                  intent: "regenerate",
                 });
               else notify("请先上传一张图片");
             },
@@ -904,6 +985,7 @@ export default function App() {
                   ? setIncoming({
                       source: project.source,
                       name: project.sourceName || project.name,
+                      intent: "regenerate",
                       initial: {
                         ...project.settings,
                         width: boardW,
@@ -930,8 +1012,9 @@ export default function App() {
                 setIncoming({
                   source: project.source || projectImage(project),
                   name: project.sourceName || project.name,
+                  intent: "regenerate",
+                  initial: { ...project.settings, mode: "simple" },
                 });
-                updateSettings({ mode: "simple" });
               },
             },
             {
@@ -1639,7 +1722,9 @@ export default function App() {
             }
           }
           onClose={() => setIncoming(null)}
-          onGenerate={(s) => generate(incoming.source, incoming.name, s)}
+          onGenerate={(s) =>
+            generate(incoming.source, incoming.name, s, incoming.intent)
+          }
         />
       )}
       {modal === "bead-list" && (
@@ -1718,7 +1803,7 @@ export default function App() {
                   return;
                 }
                 try {
-                  await saveLocal(project);
+                  await saveLocal(withSync(project));
                   commit(blank(newW, newH));
                   setModal(null);
                   setTool("brush");
@@ -2084,6 +2169,7 @@ export default function App() {
                         height: project.height,
                         mode: "recognize",
                       },
+                      "regenerate",
                     )
               }
             >
@@ -2262,7 +2348,7 @@ export default function App() {
                     await api("/logout", { method: "POST" });
                     setUser(null);
                     setCloudWorks([]);
-                    cloudVersions.current.clear();
+                    clearActiveSync();
                     notify("已退出账号");
                   } catch (e) {
                     setFormError(errText(e));
@@ -2322,9 +2408,22 @@ export default function App() {
                       onClick={async () => {
                         try {
                           const r = await api("/works/" + w.id);
+                          if (r.userId !== user.id) {
+                            notify(
+                              "登录账号已改变，请刷新页面后重新打开账号作品",
+                            );
+                            return;
+                          }
                           const p = deserialize(r.project);
+                          const sync = {
+                            source: serviceSource,
+                            userId: user.id,
+                            projectId: w.id,
+                            updated: r.updated,
+                          };
+                          if (activeUser.current?.id !== user.id) return;
+                          p.cloudSync = sync;
                           await openProject(p);
-                          cloudVersions.current.set(w.id, r.updated);
                         } catch (e) {
                           setFormError(errText(e));
                         }
@@ -2407,7 +2506,7 @@ export default function App() {
                 });
                 setUser(r.user);
                 setPassword("");
-                cloudVersions.current.clear();
+                clearActiveSync();
                 setModal(null);
                 notify(authMode === "login" ? "登录成功" : "账号已创建");
               } catch (e) {

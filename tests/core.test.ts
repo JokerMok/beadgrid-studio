@@ -61,3 +61,20 @@ test("连通填充只有四邻接；禁色重映射不影响空格与数量", ()
   p.settings.allowed = [0];
   assert.throws(() => remapDisabled(p));
 });
+
+test("读取项目保留原更新时间，缺失和非法时间稳定地排在末尾", () => {
+  const raw = serialize(blank(16, 16));
+  raw.updatedAt = 1700000000123;
+  for (let i = 0; i < 3; i++)
+    assert.equal(deserialize(raw).updatedAt, raw.updatedAt);
+  for (const updatedAt of [
+    undefined,
+    null,
+    "1700000000123",
+    -1,
+    NaN,
+    Infinity,
+    8.65e15,
+  ])
+    assert.equal(deserialize({ ...raw, updatedAt }).updatedAt, 0);
+});
