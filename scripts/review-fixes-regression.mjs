@@ -181,7 +181,8 @@ try {
   }
   async function generate(height = 16, waitForClose = true) {
     const d = page.getByRole("dialog", { name: "上传图片并设置板子" });
-    await d.getByRole("button", { name: /^原图完整置入/ }).click();
+    await d.getByRole("button", { name: "使用完整原图", exact: true }).click();
+    await d.getByLabel("输出网格比例", { exact: true }).selectOption("custom");
     for (const [label, value] of [
       ["导入宽度", "16"],
       ["导入高度", String(height)],

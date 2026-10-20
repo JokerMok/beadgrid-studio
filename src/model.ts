@@ -35,6 +35,9 @@ export type Settings = {
   height: number;
   limit: number;
   fit: "contain" | "crop";
+  gridSizing?: "source" | "custom";
+  placement?: "contain" | "cover";
+  padding?: "empty" | "white";
   crop: { x: number; y: number; w: number; h: number };
   zoom: number;
   panX: number;
@@ -248,6 +251,21 @@ export function deserialize(raw: unknown): Project {
   if (!["normal", "simple", "recognize"].includes(settings.mode))
     settings.mode = "normal";
   if (!["crop", "contain"].includes(settings.fit)) settings.fit = "contain";
+  if (
+    settings.gridSizing !== undefined &&
+    !["source", "custom"].includes(settings.gridSizing)
+  )
+    delete settings.gridSizing;
+  if (
+    settings.placement !== undefined &&
+    !["contain", "cover"].includes(settings.placement)
+  )
+    delete settings.placement;
+  if (
+    settings.padding !== undefined &&
+    !["empty", "white"].includes(settings.padding)
+  )
+    delete settings.padding;
   if (!["keep", "white"].includes(settings.alpha)) settings.alpha = "keep";
   for (const key of ["disabled", "allowed"] as const)
     settings[key] = Array.isArray(settings[key])

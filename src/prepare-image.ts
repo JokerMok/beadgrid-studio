@@ -36,33 +36,6 @@ export async function prepareRaster(
 ): Promise<Raster> {
   let image = await decode(source, signal);
   signal?.throwIfAborted();
-  if (s.fit === "crop" && s.mode !== "recognize") {
-    const r = s.crop,
-      sw = image.naturalWidth * r.w,
-      sh = image.naturalHeight * r.h,
-      c = document.createElement("canvas");
-    c.width = Math.max(1, Math.min(1600, Math.round(sw)));
-    c.height = Math.max(1, Math.round(c.width / (sw / sh)));
-    const g = c.getContext("2d")!;
-    g.imageSmoothingEnabled = true;
-    g.imageSmoothingQuality = "high";
-    g.drawImage(
-      image,
-      image.naturalWidth * r.x,
-      image.naturalHeight * r.y,
-      sw,
-      sh,
-      0,
-      0,
-      c.width,
-      c.height,
-    );
-    const cropped = c.toDataURL("image/png");
-    c.width = c.height = 0;
-    image.src = "";
-    image = await decode(cropped, signal);
-    signal?.throwIfAborted();
-  }
   if (s.mode === "recognize") {
     const a = s.sourceAlignment ?? {
         cell: Math.min(
@@ -119,20 +92,43 @@ export async function prepareRaster(
   const g = canvas.getContext("2d", { willReadFrequently: true })!;
   g.imageSmoothingEnabled = !small;
   g.imageSmoothingQuality = "high";
-  if (s.alpha === "white") {
-    g.fillStyle = "#fff";
-    g.fillRect(0, 0, canvas.width, canvas.height);
-  }
-  const ratio = Math.min(
-      canvas.width / image.naturalWidth,
-      canvas.height / image.naturalHeight,
+  const crop = s.fit === "crop" ? s.crop : { x: 0, y: 0, w: 1, h: 1 };
+  const sourceW = image.naturalWidth * crop.w,
+    sourceH = image.naturalHeight * crop.h;
+  const ratio = (s.placement === "cover" ? Math.max : Math.min)(
+      canvas.width / sourceW,
+      canvas.height / sourceH,
     ),
-    w = image.naturalWidth * ratio * s.zoom,
-    h = image.naturalHeight * ratio * s.zoom;
+    w = sourceW * ratio * s.zoom,
+    h = sourceH * ratio * s.zoom;
+  const dx = (canvas.width - w) / 2 + s.panX * canvas.width + s.alignX * size;
+  const dy = (canvas.height - h) / 2 + s.panY * canvas.height + s.alignY * size;
+  g.fillStyle = "#fff";
+  if (s.padding === "white") {
+    // Letterbox space and transparent pixels inside the source are independent.
+    const x0 = Math.max(0, Math.min(canvas.width, dx)),
+      x1 = Math.max(x0, Math.min(canvas.width, dx + w));
+    const y0 = Math.max(0, Math.min(canvas.height, dy)),
+      y1 = Math.max(y0, Math.min(canvas.height, dy + h));
+    g.fillRect(0, 0, canvas.width, y0);
+    g.fillRect(0, y1, canvas.width, canvas.height - y1);
+    g.fillRect(0, y0, x0, y1 - y0);
+    g.fillRect(x1, y0, canvas.width - x1, y1 - y0);
+  }
+  if (s.alpha === "white") {
+    // Undefined padding preserves the meaning of old .bead.json alpha settings.
+    if (s.padding === undefined) g.fillRect(0, 0, canvas.width, canvas.height);
+    else g.fillRect(dx, dy, w, h);
+  }
+  // One resampling pass from the full original; no intermediate 1600px crop PNG.
   g.drawImage(
     image,
-    (canvas.width - w) / 2 + s.panX * canvas.width + s.alignX * size,
-    (canvas.height - h) / 2 + s.panY * canvas.height + s.alignY * size,
+    crop.x * image.naturalWidth,
+    crop.y * image.naturalHeight,
+    sourceW,
+    sourceH,
+    dx,
+    dy,
     w,
     h,
   );

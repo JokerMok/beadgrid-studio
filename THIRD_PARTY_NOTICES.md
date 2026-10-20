@@ -10,4 +10,6 @@
 
 默认示例《原神》雷电将军角色立绘来自[HoYoWiki角色页](https://wiki.hoyolab.com/pc/genshin/entry/49)，2026-10-19取得；素材原地址：`https://bbs.hoyolab.com/hoyowiki/picture/character/雷电将军/avatar.png`。本地副本为`src/assets/raiden-shogun.png`，角色及原始美术权利归HoYoverse/米哈游相关权利人所有，不属于本工程的原创或开源授权范围。
 
-`src/assets/raiden-demo.json`由本工程的`prepareRaster`、`sampleCells`与`matchSamples`普通转换路径生成：208×192格、最多64色、完整置入、保留透明区域，色卡版本仍为`xing-public-221-20261016-v1`。文件保存稳定色号映射；默认原图随项目内置，无外部运行时请求。
+`src/assets/raiden-demo.json`由本工程的`prepareRaster`、`sampleCells`与`matchSamples`普通转换路径生成：长边200（200×186格）、最多64色、完整置入、保留透明区域与空格留白、关闭浅色边缘清理，色卡版本仍为`xing-public-221-20261016-v1`。文件保存稳定色号映射；默认原图随项目内置，无外部运行时请求。
+
+本轮纳西妲、芙宁娜、钟离、枫原万叶、胡桃和甘雨的额外公开角色原图仅用于本地开发验收，页面、图片URL与SHA256记录于`verification/grid-density/SOURCES.md`；未加入应用首屏资源。

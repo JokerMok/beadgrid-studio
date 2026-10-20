@@ -1,0 +1,26 @@
+[Unit]
+Description=BeadGrid Studio
+After=network.target
+
+[Service]
+Type=simple
+User=beadgrid
+Group=beadgrid
+WorkingDirectory=/srv/apps/beadgrid-studio/current
+EnvironmentFile=/srv/apps/beadgrid-studio/shared/config/app.env
+ExecStart=/srv/apps/beadgrid-studio/runtime/node-v24.22.0-linux-x64/bin/node /srv/apps/beadgrid-studio/current/server/index.mjs
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/apps/beadgrid-studio/shared/data
+CapabilityBoundingSet=
+MemoryMax=768M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

@@ -4,8 +4,6 @@ import {
   Hand,
   Crop,
   ArrowCounterClockwise,
-  LockSimple,
-  LockSimpleOpen,
   MagnifyingGlassMinus,
   MagnifyingGlassPlus,
   Spinner,
@@ -13,6 +11,13 @@ import {
 import Dialog from "./Dialog";
 import MaterialSettings from "./MaterialSettings";
 import ImportPreview from "./ImportPreview";
+import ImportGridControls from "./ImportGridControls";
+import {
+  gridFromAxis,
+  gridFromLongEdge,
+  selectedRatio,
+  sourceOutputCoverage,
+} from "../import-grid";
 import { analyseGrid } from "../reference-detection";
 import type { SourceAlignment } from "../reference-recognition";
 import { PALETTE, usage, type Settings } from "../model";
@@ -49,7 +54,16 @@ export default function ImportDialog({
     signal: AbortSignal,
   ) => Promise<void>;
 }) {
-  const [s, setS] = useState(() => structuredClone(initial));
+  const [s, setS] = useState<Settings>(() =>
+    structuredClone({
+      ...initial,
+      gridSizing: initial.gridSizing ?? "custom",
+      placement: initial.placement ?? "contain",
+      padding:
+        initial.padding ?? (initial.alpha === "white" ? "white" : "empty"),
+    }),
+  );
+  const [cropOpen, setCropOpen] = useState(() => window.innerWidth > 700);
   const [error, setError] = useState("");
   const [dimensions, setDimensions] = useState({ w: 1, h: 1 });
   const [frameSize, setFrameSize] = useState({ w: 500, h: 360 });
@@ -60,6 +74,7 @@ export default function ImportDialog({
   const [autoColors, setAutoColors] = useState(false);
   const [locked, setLocked] = useState(false),
     lockRatio = useRef(initial.width / initial.height);
+  const densityRatio = useRef(initial.width / initial.height);
   const [ready, setReady] = useState(false),
     [submitting, setSubmitting] = useState(false);
   const [analysing, setAnalysing] = useState(false),
@@ -91,7 +106,25 @@ export default function ImportDialog({
   desired.current = { source, key };
   const update = (v: Partial<Settings>) => {
     setError("");
-    setS((p) => ({ ...p, ...v }));
+    setS((p) => {
+      const next = { ...p, ...v };
+      if (
+        next.gridSizing === "custom" &&
+        (v.width !== undefined || v.height !== undefined) &&
+        next.width > 0 &&
+        next.height > 0
+      )
+        densityRatio.current = next.width / next.height;
+      if (ready && next.gridSizing === "source" && next.mode !== "recognize")
+        Object.assign(
+          next,
+          gridFromLongEdge(
+            Math.max(next.width, next.height),
+            selectedRatio(dimensions, next),
+          ),
+        );
+      return next;
+    });
   };
   const currentResult =
     preview.result && matchesConversion(preview.result, source, s)
@@ -273,31 +306,52 @@ export default function ImportDialog({
       if (!disposed.current) setSubmitting(false);
     }
   }
+  const sourceRatio = selectedRatio(dimensions, s);
+  const outputRatio = s.width / s.height;
+  const mismatch = Math.abs(sourceRatio / outputRatio - 1) > 0.01;
+  const cover = sourceOutputCoverage(s, sourceRatio);
   function dimension(axis: "width" | "height", value: number) {
-    const patch = { [axis]: value } as Partial<Settings>;
-    if (locked && Number.isInteger(value) && value >= 16 && value <= 1000) {
-      let w = axis === "width" ? value : Math.round(value * lockRatio.current);
-      let h = axis === "height" ? value : Math.round(value / lockRatio.current);
-      if (h > 1000) {
-        h = 1000;
-        w = Math.round(h * lockRatio.current);
-      }
-      if (w > 1000) {
-        w = 1000;
-        h = Math.round(w / lockRatio.current);
-      }
-      if (h < 16) {
-        h = 16;
-        w = Math.round(h * lockRatio.current);
-      }
-      if (w < 16) {
-        w = 16;
-        h = Math.round(w / lockRatio.current);
-      }
-      patch.width = clamp(w, 16, 1000);
-      patch.height = clamp(h, 16, 1000);
+    if (s.gridSizing === "source" || locked)
+      update(
+        gridFromAxis(
+          axis,
+          value,
+          s.gridSizing === "source" ? sourceRatio : lockRatio.current,
+        ),
+      );
+    else update({ [axis]: value });
+  }
+  function density(edge: number) {
+    const ratio =
+      s.gridSizing === "source"
+        ? sourceRatio
+        : locked
+          ? lockRatio.current
+          : densityRatio.current;
+    const grid = gridFromLongEdge(edge, ratio);
+    setError("");
+    setS((previous) => ({ ...previous, ...grid }));
+  }
+  function sizing(choice: string) {
+    if (choice === "source")
+      update({
+        gridSizing: "source",
+        ...gridFromLongEdge(Math.max(s.width, s.height), sourceRatio),
+      });
+    else if (choice === "custom") {
+      densityRatio.current = outputRatio;
+      setLocked(false);
+      update({ gridSizing: "custom" });
+    } else {
+      const [w, h] = choice.split(":").map(Number);
+      lockRatio.current = w / h;
+      densityRatio.current = w / h;
+      setLocked(true);
+      update({
+        gridSizing: "custom",
+        ...gridFromLongEdge(Math.max(s.width, s.height), w / h),
+      });
     }
-    update(patch);
   }
   function numericCrop(axis: keyof Settings["crop"], percent: number) {
     if (!Number.isFinite(percent)) return;
@@ -323,10 +377,11 @@ export default function ImportDialog({
       if (disposed.current) return;
       if (!a) {
         setGridMessage("未检测到稳定网格，请手动调整格距和起点。");
-        update({ mode: "recognize", fit: "contain" });
+        update({ mode: "recognize", gridSizing: "custom", fit: "contain" });
       } else {
         update({
           mode: "recognize",
+          gridSizing: "custom",
           fit: "contain",
           width: clamp(a.columns, 16, 1000),
           height: clamp(a.rows, 16, 1000),
@@ -360,9 +415,12 @@ export default function ImportDialog({
     });
   }
   const ratio =
-    Math.min(
-      (frameSize.w - 32) / dimensions.w,
-      (frameSize.h - 32) / dimensions.h,
+    Math.max(
+      0.01,
+      Math.min(
+        (frameSize.w - 32) / dimensions.w,
+        (frameSize.h - 32) / dimensions.h,
+      ),
     ) * viewZoom;
   const displayW = dimensions.w * ratio,
     displayH = dimensions.h * ratio;
@@ -464,249 +522,239 @@ export default function ImportDialog({
           />
         </div>
         <div className="import-workspace">
-          <section className="import-pane" aria-label="原图裁剪">
-            <div className="import-pane-title">
-              <h3>原图裁剪</h3>
-              <span>
-                {s.fit === "crop" ? "保留选框内的内容" : "完整置入，不拉伸"}
-              </span>
-            </div>
-            <div
-              className="source-crop-frame"
-              ref={frame}
-              onPointerDown={(e) => down(e, "pan")}
-              onPointerMove={move}
-              onPointerUp={endDrag}
-              onPointerCancel={endDrag}
-            >
+          <details
+            className="import-source-panel"
+            open={cropOpen}
+            onToggle={(e) => setCropOpen(e.currentTarget.open)}
+          >
+            <summary>裁剪与取景 · 辅助操作</summary>
+            <section className="import-pane" aria-label="原图裁剪">
+              <div className="import-pane-title">
+                <h3>原图裁剪</h3>
+                <span>
+                  {s.fit === "crop" ? "保留选框内的内容" : "完整置入，不拉伸"}
+                </span>
+              </div>
               <div
-                className="source-crop-image"
-                style={{ left, top, width: displayW, height: displayH }}
+                className="source-crop-frame"
+                ref={frame}
+                onPointerDown={(e) => down(e, "pan")}
+                onPointerMove={move}
+                onPointerUp={endDrag}
+                onPointerCancel={endDrag}
               >
-                <img
-                  ref={image}
-                  src={source}
-                  draggable={false}
-                  alt="导入图片预览"
-                  onError={() => {
-                    setReady(false);
-                    setError("图片解码失败，请换一张图片");
-                  }}
-                  onLoad={(e) => {
-                    setDimensions({
-                      w: e.currentTarget.naturalWidth,
-                      h: e.currentTarget.naturalHeight,
+                <div
+                  className="source-crop-image"
+                  style={{ left, top, width: displayW, height: displayH }}
+                >
+                  <img
+                    ref={image}
+                    src={source}
+                    draggable={false}
+                    alt="导入图片预览"
+                    onError={() => {
+                      setReady(false);
+                      setError("图片解码失败，请换一张图片");
+                    }}
+                    onLoad={(e) => {
+                      const dimensions = {
+                        w: e.currentTarget.naturalWidth,
+                        h: e.currentTarget.naturalHeight,
+                      };
+                      setDimensions(dimensions);
+                      setS((previous) =>
+                        previous.gridSizing === "source" &&
+                        previous.mode !== "recognize"
+                          ? {
+                              ...previous,
+                              ...gridFromLongEdge(
+                                Math.max(previous.width, previous.height),
+                                selectedRatio(dimensions, previous),
+                              ),
+                            }
+                          : previous,
+                      );
+                      fitView();
+                      setReady(true);
+                      if (s.mode === "recognize" && !s.sourceAlignment)
+                        void detect(e.currentTarget);
+                    }}
+                  />
+                  {(cover.w < 0.999 || cover.h < 0.999) && (
+                    <div
+                      className="source-output-guide"
+                      style={{
+                        left: `${((s.fit === "crop" ? s.crop.x : 0) + (s.fit === "crop" ? s.crop.w : 1) * cover.x) * 100}%`,
+                        top: `${((s.fit === "crop" ? s.crop.y : 0) + (s.fit === "crop" ? s.crop.h : 1) * cover.y) * 100}%`,
+                        width: `${(s.fit === "crop" ? s.crop.w : 1) * cover.w * 100}%`,
+                        height: `${(s.fit === "crop" ? s.crop.h : 1) * cover.h * 100}%`,
+                      }}
+                    >
+                      <span>实际输出范围</span>
+                    </div>
+                  )}
+                  {s.fit === "crop" && (
+                    <div
+                      className="source-crop-box"
+                      data-crop={JSON.stringify(s.crop)}
+                      onPointerDown={(e) => down(e, "move")}
+                      style={{
+                        left: `${s.crop.x * 100}%`,
+                        top: `${s.crop.y * 100}%`,
+                        width: `${s.crop.w * 100}%`,
+                        height: `${s.crop.h * 100}%`,
+                      }}
+                    >
+                      {["nw", "n", "ne", "e", "se", "s", "sw", "w"].map(
+                        (handle) => (
+                          <button
+                            key={handle}
+                            disabled={submitting}
+                            className={"crop-handle " + handle}
+                            aria-label={"裁剪把手" + handle}
+                            onPointerDown={(e) => down(e, handle)}
+                          />
+                        ),
+                      )}
+                    </div>
+                  )}
+                </div>
+                <span className="crop-ratio-tag">
+                  {panMode
+                    ? "拖动平移视图"
+                    : s.fit === "crop"
+                      ? "拖动选框和边缘把手"
+                      : "原图完整置入"}
+                </span>
+              </div>
+              <div className="import-view-tools">
+                <button
+                  className={!panMode ? "active" : ""}
+                  disabled={submitting}
+                  onClick={() => setPanMode(false)}
+                  title="移动和调整裁剪框"
+                >
+                  <Crop size={17} />
+                  裁剪
+                </button>
+                <button
+                  className={panMode ? "active" : ""}
+                  disabled={submitting}
+                  onClick={() => setPanMode(true)}
+                  title="平移原图查看区域"
+                >
+                  <Hand size={17} />
+                  移图
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label="缩小原图视图"
+                  title="缩小原图视图"
+                  disabled={submitting || viewZoom <= 1}
+                  onClick={() => setViewZoom((v) => Math.max(1, v / 1.4))}
+                >
+                  <MagnifyingGlassMinus size={18} />
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label="放大原图视图"
+                  title="放大原图视图"
+                  disabled={submitting || viewZoom >= 8}
+                  onClick={() => setViewZoom((v) => Math.min(8, v * 1.4))}
+                >
+                  <MagnifyingGlassPlus size={18} />
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label="适应原图窗口"
+                  title="适应原图窗口"
+                  onClick={fitView}
+                >
+                  <ArrowsOut size={18} />
+                </button>
+              </div>
+              <div className="import-crop-options">
+                <button
+                  disabled={submitting}
+                  className={s.fit === "crop" ? "active" : ""}
+                  onClick={() => update({ fit: "crop" })}
+                >
+                  自由裁剪
+                </button>
+                <button
+                  disabled={submitting}
+                  className={s.fit === "contain" ? "active" : ""}
+                  onClick={() =>
+                    update({
+                      fit: "contain",
+                      zoom: 1,
+                      panX: 0,
+                      panY: 0,
+                      alignX: 0,
+                      alignY: 0,
+                    })
+                  }
+                >
+                  使用完整原图
+                </button>
+                <button
+                  disabled={submitting}
+                  title="重置取景范围和构图位置"
+                  onClick={() => {
+                    update({
+                      crop: { x: 0, y: 0, w: 1, h: 1 },
+                      zoom: 1,
+                      panX: 0,
+                      panY: 0,
                     });
                     fitView();
-                    setReady(true);
-                    if (s.mode === "recognize" && !s.sourceAlignment)
-                      void detect(e.currentTarget);
                   }}
-                />
-                {s.fit === "crop" && (
-                  <div
-                    className="source-crop-box"
-                    data-crop={JSON.stringify(s.crop)}
-                    onPointerDown={(e) => down(e, "move")}
-                    style={{
-                      left: `${s.crop.x * 100}%`,
-                      top: `${s.crop.y * 100}%`,
-                      width: `${s.crop.w * 100}%`,
-                      height: `${s.crop.h * 100}%`,
-                    }}
-                  >
-                    {["nw", "n", "ne", "e", "se", "s", "sw", "w"].map(
-                      (handle) => (
-                        <button
-                          key={handle}
-                          disabled={submitting}
-                          className={"crop-handle " + handle}
-                          aria-label={"裁剪把手" + handle}
-                          onPointerDown={(e) => down(e, handle)}
-                        />
-                      ),
-                    )}
-                  </div>
-                )}
+                >
+                  <ArrowCounterClockwise size={16} />
+                  重置裁剪
+                </button>
               </div>
-              <span className="crop-ratio-tag">
-                {panMode
-                  ? "拖动平移视图"
-                  : s.fit === "crop"
-                    ? "拖动选框和边缘把手"
-                    : "原图完整置入"}
-              </span>
-            </div>
-            <div className="import-view-tools">
-              <button
-                className={!panMode ? "active" : ""}
-                disabled={submitting}
-                onClick={() => setPanMode(false)}
-                title="移动和调整裁剪框"
-              >
-                <Crop size={17} />
-                裁剪
-              </button>
-              <button
-                className={panMode ? "active" : ""}
-                disabled={submitting}
-                onClick={() => setPanMode(true)}
-                title="平移原图查看区域"
-              >
-                <Hand size={17} />
-                移图
-              </button>
-              <button
-                className="icon-button"
-                aria-label="缩小原图视图"
-                title="缩小原图视图"
-                disabled={submitting || viewZoom <= 1}
-                onClick={() => setViewZoom((v) => Math.max(1, v / 1.4))}
-              >
-                <MagnifyingGlassMinus size={18} />
-              </button>
-              <button
-                className="icon-button"
-                aria-label="放大原图视图"
-                title="放大原图视图"
-                disabled={submitting || viewZoom >= 8}
-                onClick={() => setViewZoom((v) => Math.min(8, v * 1.4))}
-              >
-                <MagnifyingGlassPlus size={18} />
-              </button>
-              <button
-                className="icon-button"
-                aria-label="适应原图窗口"
-                title="适应原图窗口"
-                onClick={fitView}
-              >
-                <ArrowsOut size={18} />
-              </button>
-            </div>
-            <div className="import-crop-options">
-              <button
-                disabled={submitting}
-                className={s.fit === "crop" ? "active" : ""}
-                onClick={() => update({ fit: "crop" })}
-              >
-                自由裁剪
-              </button>
-              <button
-                disabled={submitting}
-                className={s.fit === "contain" ? "active" : ""}
-                onClick={() =>
-                  update({
-                    fit: "contain",
-                    zoom: 1,
-                    panX: 0,
-                    panY: 0,
-                    alignX: 0,
-                    alignY: 0,
-                  })
-                }
-              >
-                原图完整置入
-              </button>
-              <button
-                disabled={submitting}
-                title="重置取景范围和构图位置"
-                onClick={() => {
-                  update({
-                    crop: { x: 0, y: 0, w: 1, h: 1 },
-                    zoom: 1,
-                    panX: 0,
-                    panY: 0,
-                  });
-                  fitView();
-                }}
-              >
-                <ArrowCounterClockwise size={16} />
-                重置裁剪
-              </button>
-            </div>
-          </section>
-          <ImportPreview
-            result={preview.result}
-            pending={pending}
-            progress={preview.progress}
-            error={previewError}
-            onRetry={() => {
-              if (ready && !invalid) void startPreview(s, true).catch(() => {});
-            }}
-          />
+            </section>
+          </details>
+          <div className="import-preview-column">
+            <ImportPreview
+              result={preview.result}
+              pending={pending}
+              progress={preview.progress}
+              error={previewError}
+              onRetry={() => {
+                if (ready && !invalid)
+                  void startPreview(s, true).catch(() => {});
+              }}
+            />
+            <ImportGridControls
+              settings={s}
+              locked={locked}
+              onLock={() => {
+                lockRatio.current = outputRatio;
+                setLocked(!locked);
+              }}
+              onSizing={sizing}
+              onDimension={dimension}
+              onDensity={density}
+              update={update}
+              disabled={submitting}
+              counts={
+                currentResult && !pending && !previewError ? counts : null
+              }
+              total={
+                currentResult && !pending && !previewError ? total : undefined
+              }
+              material={material}
+              mismatch={mismatch}
+              sourceRatio={sourceRatio}
+            />
+          </div>
         </div>
         <p className="import-composition-hint">
           放大主体可改善局部细节；增加格数会增大成品尺寸和用豆量。
         </p>
         <fieldset className="import-settings" disabled={submitting}>
-          <section className="import-grid-settings">
-            <div className="import-section-title">
-              <h3>输出网格</h3>
-              <button
-                className={"icon-button " + (locked ? "active" : "")}
-                disabled={
-                  !Number.isFinite(s.width / s.height) ||
-                  s.width < 16 ||
-                  s.height < 16
-                }
-                aria-label="锁定网格宽高比例"
-                aria-pressed={locked}
-                title={locked ? "解除网格比例锁定" : "按当前宽高比例锁定"}
-                onClick={() => {
-                  lockRatio.current = s.width / s.height || 1;
-                  setLocked(!locked);
-                }}
-              >
-                {locked ? (
-                  <LockSimple size={18} />
-                ) : (
-                  <LockSimpleOpen size={18} />
-                )}
-              </button>
-            </div>
-            <div className="dimensions">
-              <label>
-                宽度
-                <input
-                  aria-label="导入宽度"
-                  type="number"
-                  min="16"
-                  max="1000"
-                  value={s.width || ""}
-                  onChange={(e) => dimension("width", +e.target.value)}
-                />
-                <span>格</span>
-              </label>
-              <b>×</b>
-              <label>
-                高度
-                <input
-                  aria-label="导入高度"
-                  type="number"
-                  min="16"
-                  max="1000"
-                  value={s.height || ""}
-                  onChange={(e) => dimension("height", +e.target.value)}
-                />
-                <span>格</span>
-              </label>
-            </div>
-            <div className="import-size-presets">
-              {[52, 78, 104, 120].map((n) => (
-                <button
-                  key={n}
-                  onClick={() =>
-                    locked
-                      ? dimension("width", n)
-                      : update({ width: n, height: n })
-                  }
-                >
-                  {n}
-                </button>
-              ))}
-              <span>{locked ? "已锁定比例" : "宽高独立 · 16–1000格"}</span>
-            </div>
-          </section>
           <section className="import-color-settings">
             <h3>最大颜色数</h3>
             <div className="import-color-limit">
@@ -749,41 +797,6 @@ export default function ImportDialog({
             />
           </section>
         </fieldset>
-        <div
-          className={
-            "import-summary" +
-            (currentResult && !pending && !previewError ? "" : " outdated")
-          }
-          aria-label="制作信息"
-        >
-          <div>
-            <span>预计成品尺寸</span>
-            <strong>
-              {material && !invalid
-                ? `${((s.width * material.beadSizeMm) / 10).toFixed(1)} × ${((s.height * material.beadSizeMm) / 10).toFixed(1)} cm`
-                : "请先选择有效规格"}
-            </strong>
-          </div>
-          <div>
-            <span>实际使用颜色</span>
-            <strong>
-              {currentResult && !pending && !previewError
-                ? counts!.length
-                : "—"}
-              <small>色</small>
-            </strong>
-          </div>
-          <div>
-            <span>有效用豆量</span>
-            <strong>
-              {currentResult && !pending && !previewError
-                ? total!.toLocaleString()
-                : "—"}
-              <small>颗</small>
-            </strong>
-          </div>
-          <p>按格数与豆子尺寸估算，未计板间隙及熨烫收缩</p>
-        </div>
         <details className="import-advanced">
           <summary>高级参数与精确裁剪</summary>
           <fieldset disabled={submitting}>

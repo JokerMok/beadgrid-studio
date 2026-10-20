@@ -391,6 +391,14 @@ export default function App() {
       setIncoming({
         ...(e as CustomEvent).detail,
         sessionId: crypto.randomUUID(),
+        initial: {
+          ...defaults(200, 200),
+          gridSizing: "source",
+          placement: "contain",
+          padding: "empty",
+          limit: 64,
+          removeLight: false,
+        },
         intent: "new",
       });
     window.addEventListener("xing-replace-upload", replace);
@@ -423,7 +431,14 @@ export default function App() {
         sessionId: crypto.randomUUID(),
         source,
         name: file.name,
-        initial: defaults(104, 104),
+        initial: {
+          ...defaults(200, 200),
+          gridSizing: "source",
+          placement: "contain",
+          padding: "empty",
+          limit: 64,
+          removeLight: false,
+        },
         intent: "new",
       });
       setMobileSide(false);

@@ -208,6 +208,9 @@ try {
     }
   }
   async function grid(w, h) {
+    await dialog()
+      .getByLabel("输出网格比例", { exact: true })
+      .selectOption("custom");
     await dialog().getByLabel("导入宽度", { exact: true }).fill(String(w));
     await dialog().getByLabel("导入高度", { exact: true }).fill(String(h));
   }
@@ -469,7 +472,7 @@ try {
 
   await upload(fullFigure, true);
   await dialog()
-    .getByRole("button", { name: "原图完整置入", exact: true })
+    .getByRole("button", { name: "使用完整原图", exact: true })
     .click();
   await grid(104, 96);
   await ready();
@@ -573,6 +576,13 @@ try {
   await ready();
   const d = dialog(),
     footer = d.locator(".import-footer");
+  await d.locator(".import-source-panel > summary").click();
+  await d.locator(".source-crop-frame").scrollIntoViewIfNeeded();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".source-crop-box").getBoundingClientRect().width >
+      80,
+  );
   const mobileHandle = await d
     .getByRole("button", { name: "裁剪把手nw", exact: true })
     .boundingBox();
@@ -593,6 +603,7 @@ try {
   const touched = await ready();
   assert.ok(touched.settings.crop.x > 0 && touched.settings.crop.y > 0);
   assert.equal(await page.evaluate(() => devicePixelRatio), 2);
+  await d.locator(".import-source-panel > summary").click();
   const dimensions = await d.evaluate((node) => ({
     width: node.clientWidth,
     scrollWidth: node.scrollWidth,

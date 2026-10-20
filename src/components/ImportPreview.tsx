@@ -25,12 +25,12 @@ export default function ImportPreview({
   const viewport = useRef<HTMLDivElement>(null),
     canvas = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 480, h: 360 });
-  const [zoom, setZoom] = useState(1),
+  const [pixelScale, setPixelScale] = useState<number | null>(null),
     [pan, setPan] = useState({ x: 0, y: 0 }),
     [grid, setGrid] = useState(false);
   const drag = useRef<{ x: number; y: number; pan: typeof pan } | null>(null);
   const fit = () => {
-    setZoom(1);
+    setPixelScale(null);
     setPan({ x: 0, y: 0 });
   };
   useEffect(() => {
@@ -40,7 +40,9 @@ export default function ImportPreview({
     if (viewport.current) observer.observe(viewport.current);
     return () => observer.disconnect();
   }, []);
-  useEffect(fit, [result?.width, result?.height]);
+  useEffect(() => {
+    setPan({ x: 0, y: 0 });
+  }, [result?.width, result?.height]);
   useEffect(() => {
     const node = canvas.current;
     if (!result || !node) return;
@@ -61,16 +63,18 @@ export default function ImportPreview({
   }, [result]);
   const width = result?.width || 1,
     height = result?.height || 1;
-  const cell =
-    Math.max(0.01, Math.min((size.w - 32) / width, (size.h - 32) / height)) *
-    zoom;
+  const fitCell = Math.max(
+    0.05,
+    Math.min((size.w - 32) / width, (size.h - 32) / height),
+  );
+  const cell = pixelScale ?? fitCell;
   function scale(next: number, anchor?: { x: number; y: number }) {
-    next = Math.max(1, Math.min(24, next));
-    const factor = next / zoom,
+    next = Math.max(0.1, Math.min(32, next));
+    const factor = next / cell,
       x = anchor?.x || 0,
       y = anchor?.y || 0;
     setPan({ x: (pan.x - x) * factor + x, y: (pan.y - y) * factor + y });
-    setZoom(next);
+    setPixelScale(next);
   }
 
   useEffect(() => {
@@ -79,14 +83,14 @@ export default function ImportPreview({
     const wheel = (event: WheelEvent) => {
       event.preventDefault();
       const rect = node.getBoundingClientRect();
-      scale(zoom * (event.deltaY < 0 ? 1.18 : 1 / 1.18), {
+      scale(cell * (event.deltaY < 0 ? 1.18 : 1 / 1.18), {
         x: event.clientX - rect.left - rect.width / 2,
         y: event.clientY - rect.top - rect.height / 2,
       });
     };
     node.addEventListener("wheel", wheel, { passive: false });
     return () => node.removeEventListener("wheel", wheel);
-  }, [zoom, pan]);
+  }, [cell, pan]);
 
   return (
     <section className="import-pane import-preview-pane" aria-label="拼豆预览">
@@ -180,18 +184,28 @@ export default function ImportPreview({
           className="icon-button"
           title="缩小预览"
           aria-label="缩小预览"
-          disabled={!result || zoom <= 1}
-          onClick={() => scale(zoom / 1.4)}
+          disabled={!result || cell <= 0.1}
+          onClick={() => scale(cell / 1.4)}
         >
           <MagnifyingGlassMinus size={18} />
         </button>
-        <span>{Math.round(zoom * 100)}%</span>
+        <button
+          className="preview-actual-scale"
+          title="100% = 1格对应1个CSS像素"
+          aria-label="预览实际100%"
+          onClick={() => {
+            setPixelScale(1);
+            setPan({ x: 0, y: 0 });
+          }}
+        >
+          {Math.round(cell * 100)}%
+        </button>
         <button
           className="icon-button"
           title="放大预览"
           aria-label="放大预览"
-          disabled={!result || zoom >= 24}
-          onClick={() => scale(zoom * 1.4)}
+          disabled={!result || cell >= 32}
+          onClick={() => scale(cell * 1.4)}
         >
           <MagnifyingGlassPlus size={18} />
         </button>
@@ -220,7 +234,7 @@ export default function ImportPreview({
             <button onClick={onRetry}>重试预览</button>
           </>
         ) : (
-          "拖动平移，滚轮或按钮缩放；放大查看局部细节。"
+          "缩放只改变显示；增加实际细节请调节下方输出网格。"
         )}
       </p>
     </section>
