@@ -109,17 +109,21 @@ try {
   let cm = await call(p, "/me");
   if (cm.http !== 200) {
     await p.getByRole("link", { name: "登录", exact: true }).click();
-    await p.waitForURL(
-      (u) =>
-        u.origin === "https://identity.accounts.shizibandu.icu" ||
-        u.origin === "https://accounts.shizibandu.icu",
+    await p.waitForFunction(
+      () =>
+        !!document.querySelector("#username") ||
+        !!document.querySelector('[aria-label="退出当前产品"]'),
     );
-    if (new URL(p.url()).origin.includes("identity.")) {
+    if (await p.locator("#username").isVisible()) {
       await p.locator("#username").fill(qa.a.username);
       await p.locator("#password").fill(qa.a.password);
       await p.getByRole("button", { name: "登录", exact: true }).click();
     }
-    await p.waitForURL((u) => u.origin === "https://accounts.shizibandu.icu");
+    await p.waitForFunction(
+      () =>
+        location.origin === "https://accounts.shizibandu.icu" &&
+        !!document.querySelector('[aria-label="退出当前产品"]'),
+    );
     cm = await call(p, "/me");
   }
   assert.equal(cm.http, 200);
