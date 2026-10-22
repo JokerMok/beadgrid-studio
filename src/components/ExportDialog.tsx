@@ -282,7 +282,7 @@ export default function ExportDialog({
                 ? "游客可在本地编辑和备份。高清图纸下载需要登录。"
                 : user.exportAccess
                   ? `${accountLabel(user)}：中心已允许免次导出，不消耗次数。`
-                  : `${accountLabel(user)}：确认后预留1次免费导出，当前剩余 ${user.freeCredits} 次。`}
+                  : `${accountLabel(user)}：确认后预留1次导出次数，当前剩余 ${user.freeCredits} 次。`}
           确认前取消或失败释放预占；结果未知会查询原任务。预占5分钟到期，已完成文件重下不重复扣次。完整图纸仍为单张PNG，不会静默改为分区。
         </span>
       </div>

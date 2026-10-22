@@ -341,6 +341,9 @@ export function installAccounts({ app, db, rate }) {
           ? "expired"
           : "ordinary",
       exportAccess: !!access?.allowed,
+      studioAccess: e.features.some(
+        (f) => f.id === "studio" && f.kind === "access" && f.allowed,
+      ),
       exportQuotaAllowed: !!quota?.allowed,
       heldCredits: quota?.held || 0,
       entitlements: e,
@@ -383,7 +386,7 @@ export function installAccounts({ app, db, rate }) {
       ai: { available: false, reason: "原站未开放；未接入模型" },
     }),
   );
-  app.post("/api/access/:feature", auth, async (req, res) => {
+  app.post("/api/access/:feature", auth, account, async (req, res) => {
     if (!["studio", "cloud"].includes(req.params.feature))
       throw fault(400, "INVALID_FEATURE", "功能无效");
     res.json(await rights.check(req.accessToken, req.params.feature));

@@ -17,7 +17,8 @@ export default function AccountDialog({
   const [info, setInfo] = useState<any>(null),
     [policy, setPolicy] = useState<any>(null),
     [error, setError] = useState(""),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [loading, setLoading] = useState(true);
   const currentUser = useRef(user);
   currentUser.current = user;
   const u = info?.user?.id === user?.id ? info?.user : user;
@@ -38,10 +39,15 @@ export default function AccountDialog({
   }
   useEffect(() => {
     setInfo(null);
+    setLoading(true);
     let alive = true;
-    load().catch((e) => {
-      if (alive) setError(e.message);
-    });
+    load()
+      .catch((e) => {
+        if (alive) setError(e.message);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
     return () => {
       alive = false;
     };
@@ -59,7 +65,8 @@ export default function AccountDialog({
   }
   return (
     <Dialog title={u ? "拼豆账号与权益" : "使用公共账号登录"} onClose={onClose}>
-      <div className="account-flow" aria-busy={busy}>
+      <div className="account-flow" aria-busy={busy || loading}>
+        {loading && <p role="status">正在读取公共账号权益与任务…</p>}
         {error && (
           <p className="error" role="alert">
             {error}{" "}
@@ -155,7 +162,9 @@ export default function AccountDialog({
             </div>
             <details open>
               <summary>最近导出与任务恢复</summary>
-              {info?.jobs?.length ? (
+              {loading ? (
+                <p className="muted">正在读取任务…</p>
+              ) : info?.jobs?.length ? (
                 info.jobs.map((j: any) => (
                   <div key={j.id} className="account-job">
                     <p>

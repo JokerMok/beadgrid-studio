@@ -8,7 +8,7 @@ import ImportPreview from "./components/ImportPreview";
 import ImportGridControls from "./components/ImportGridControls";
 import { accountLabel, type AccountUser } from "./account";
 import { captureGeneration, restoreGeneration, hasManualEdits } from "./model";
-import { localScope, loadLegacyDraft, listUnassigned } from "./storage";
+import { localScope } from "./storage";
 import { gridFromLongEdge, gridFromAxis } from "./import-grid";
 import { IRON_STYLES, type IronStyle } from "./ironing";
 import OutlineDialog from "./components/OutlineDialog";
@@ -175,7 +175,6 @@ export default function App() {
     [newW, setNewW] = useState(52),
     [newH, setNewH] = useState(52),
     [localWorks, setLocalWorks] = useState<Project[]>([]),
-    [unassignedWorks, setUnassignedWorks] = useState<Project[]>([]),
     [cloudWorks, setCloudWorks] = useState<
       { id: string; title: string; updated: number }[]
     >([]),
@@ -866,6 +865,24 @@ export default function App() {
     for (const i of selection) cells[i] = value;
     commit({ ...project, cells }, true);
   }
+  async function openStudioModal(target: Modal) {
+    const owner = activeUser.current?.id,
+      identity = scopeRef.current;
+    if (!owner) {
+      setModal("auth");
+      return;
+    }
+    try {
+      await api("/access/studio", {
+        method: "POST",
+        body: JSON.stringify({ expectedUserId: owner }),
+      });
+      if (owner === activeUser.current?.id && identity === scopeRef.current)
+        setModal(target);
+    } catch (e) {
+      notify(errText(e));
+    }
+  }
   async function accountWorks() {
     const account = activeUser.current;
     if (!account) return [];
@@ -881,11 +898,9 @@ export default function App() {
     setModal("works");
     setFormError("");
     try {
-      const local = await listLocal(),
-        unassigned = await listUnassigned();
+      const local = await listLocal();
       if (identity !== scopeRef.current) return;
       setLocalWorks(local);
-      setUnassignedWorks(unassigned);
       if (activeUser.current) setCloudWorks(await accountWorks());
     } catch (e) {
       setFormError(errText(e));
@@ -1528,7 +1543,7 @@ export default function App() {
           {action(
             "用豆清单",
             FileArrowDown,
-            () => setModal(user ? "bead-list" : "auth"),
+            () => openStudioModal("bead-list"),
             "bead-list-entry",
           )}
           <button
@@ -1602,7 +1617,7 @@ export default function App() {
                 {
                   name: "自选颜色",
                   icon: GridFour,
-                  run: () => setModal(user ? "palette" : "auth"),
+                  run: () => openStudioModal("palette"),
                 },
                 {
                   name: "添加底图",
@@ -1631,7 +1646,7 @@ export default function App() {
                 {
                   name: "识别成手搓图",
                   icon: MagicWand,
-                  run: () => setModal(user ? "handmade" : "auth"),
+                  run: () => openStudioModal("handmade"),
                 },
                 {
                   name: "禁用色号",
@@ -1776,7 +1791,7 @@ export default function App() {
             )}
             <CanvasEditor
               project={project}
-              guest={!user}
+              guest={!user?.studioAccess}
               tool={tool}
               color={color}
               brush={brush}
@@ -1800,7 +1815,7 @@ export default function App() {
                   : undefined
               }
             />
-            {!user && (
+            {!user?.studioAccess && (
               <div className="guest-preview-notice">
                 游客试用 · 登录后查看完整色号与高清导出
               </div>
@@ -2303,7 +2318,7 @@ export default function App() {
                   </div>
                   <button
                     className="soft similar-action"
-                    onClick={() => setModal(user ? "similar" : "auth")}
+                    onClick={() => openStudioModal("similar")}
                   >
                     使用相似色号合并
                   </button>
@@ -2358,7 +2373,7 @@ export default function App() {
               )}
               <button
                 className="full"
-                onClick={() => setModal(user ? "bead-list" : "auth")}
+                onClick={() => openStudioModal("bead-list")}
               >
                 <FileArrowDown size={17} />
                 打开用豆清单
@@ -2479,33 +2494,34 @@ export default function App() {
                 onChange={(e) => setSearch(e.target.value)}
               />
               <div className="side-colors">
-                {(user ? filteredColors : filteredColors.slice(0, 5)).map(
-                  (i) => (
-                    <button
-                      key={i}
-                      title={`${PALETTE[i].code} · ${PALETTE[i].name} · ${countMap.get(i) || 0}颗`}
-                      aria-label={`选择色号${PALETTE[i].code}`}
-                      className={
-                        (i === color ? "selected " : "") +
-                        (project.settings.disabled.includes(i)
-                          ? "disabled-color"
-                          : "")
-                      }
-                      onClick={() => {
-                        setColor(i);
-                        setTool("brush");
-                      }}
-                    >
-                      <span style={{ background: PALETTE[i].hex }} />
-                      <div className="color-row-copy">
-                        <strong>{PALETTE[i].code}</strong>
-                        <small>{PALETTE[i].name}</small>
-                      </div>
-                      <em>需要 {countMap.get(i) || 0} 颗</em>
-                    </button>
-                  ),
-                )}
-                {!user && filteredColors.length > 5 && (
+                {(user?.studioAccess
+                  ? filteredColors
+                  : filteredColors.slice(0, 5)
+                ).map((i) => (
+                  <button
+                    key={i}
+                    title={`${PALETTE[i].code} · ${PALETTE[i].name} · ${countMap.get(i) || 0}颗`}
+                    aria-label={`选择色号${PALETTE[i].code}`}
+                    className={
+                      (i === color ? "selected " : "") +
+                      (project.settings.disabled.includes(i)
+                        ? "disabled-color"
+                        : "")
+                    }
+                    onClick={() => {
+                      setColor(i);
+                      setTool("brush");
+                    }}
+                  >
+                    <span style={{ background: PALETTE[i].hex }} />
+                    <div className="color-row-copy">
+                      <strong>{PALETTE[i].code}</strong>
+                      <small>{PALETTE[i].name}</small>
+                    </div>
+                    <em>需要 {countMap.get(i) || 0} 颗</em>
+                  </button>
+                ))}
+                {!user?.studioAccess && filteredColors.length > 5 && (
                   <div className="guest-palette-lock">
                     <strong>
                       其余{filteredColors.length - 5}个色号登录后查看
@@ -2528,7 +2544,7 @@ export default function App() {
               </div>
               <button
                 className="full soft"
-                onClick={() => setModal(user ? "bead-list" : "auth")}
+                onClick={() => openStudioModal("bead-list")}
               >
                 用豆清单 · 复制与下载
               </button>
@@ -2943,67 +2959,7 @@ export default function App() {
               备份当前项目
             </button>
           </div>
-          <details className="legacy-adoption">
-            <summary>旧版草稿与未归属作品恢复（需明确导入）</summary>
-            <p className="micro">
-              旧版无归属数据不会静默绑定新账号。原记录保留，导入创建当前身份的独立副本；不会自动上传。
-            </p>
-            <button
-              onClick={async () => {
-                try {
-                  const p = await loadLegacyDraft();
-                  if (!p) {
-                    notify("没有旧版草稿");
-                    return;
-                  }
-                  if (
-                    !window.confirm(
-                      "旧版草稿可能属于此前使用此浏览器的账号。确认将其复制到当前身份？",
-                    )
-                  )
-                    return;
-                  await openProject(
-                    {
-                      ...p,
-                      id: crypto.randomUUID(),
-                      name: (p.name + " · 旧版恢复").slice(0, 120),
-                      cloudSync: undefined,
-                    },
-                    true,
-                  );
-                } catch (e) {
-                  setFormError(errText(e));
-                }
-              }}
-            >
-              查看并导入旧版草稿
-            </button>
-            {unassignedWorks.map((p) => (
-              <div key={p.id}>
-                <span>{p.name}</span>
-                <button
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        "确认将此旧版作品复制到当前身份？原记录保留，不会上传。",
-                      )
-                    )
-                      openProject(
-                        {
-                          ...p,
-                          id: crypto.randomUUID(),
-                          cloudSync: undefined,
-                          name: (p.name + " · 旧版恢复").slice(0, 120),
-                        },
-                        true,
-                      );
-                  }}
-                >
-                  导入副本
-                </button>
-              </div>
-            ))}
-          </details>
+
           <h3>
             此浏览器的本地作品{" "}
             <span className="muted">{localWorks.length}</span>
@@ -3408,7 +3364,7 @@ export default function App() {
       {modal === "help" && (
         <Dialog title="从图片到一颗颗拼豆" onClose={() => setModal(null)}>
           <p className="hint">
-            图片计算和编辑在浏览器本地进行，本地草稿按身份分别保存。账号作品、权益、激活码和图纸下载由本服务校验。重要作品请保存命名副本或导出项目文件。
+            图片计算和编辑在浏览器本地进行，本地草稿按身份分别保存。账号、会员和次数由公共中心管理，拼豆服务校验作品归属和文件领取。重要作品请保存命名副本或导出项目文件。
           </p>
           <ol className="guide">
             <li>

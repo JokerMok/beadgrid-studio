@@ -13,7 +13,7 @@
     "public:restart": "node scripts/public-tunnel.mjs restart",
     "check": "tsc -b",
     "test": "node --import tsx --test tests/*.test.ts",
-    "test:browser": "node scripts/product-flow-browser.mjs",
+    "test:browser": "node scripts/accounts-browser.mjs",
     "test:parity": "node scripts/compare-conversion.mjs && node scripts/compare-advanced.mjs && node scripts/compare-export.mjs",
     "local:start": "node scripts/local-runtime.mjs start",
     "local:status": "node scripts/local-runtime.mjs status",

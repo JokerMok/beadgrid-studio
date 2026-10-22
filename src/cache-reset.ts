@@ -2,7 +2,12 @@
 export const CACHE_EPOCH = "beadgrid-public-accounts-v1";
 export const DATABASE_NAME = "beadgrid-public-accounts-v1";
 export async function resetLegacyProductCache() {
-  if (localStorage.getItem("beadgrid-cache-epoch") === CACHE_EPOCH) return;
+  if (
+    localStorage.getItem("beadgrid-cache-epoch") === CACHE_EPOCH &&
+    !localStorage.getItem("beadgrid-legacy-delete-pending")
+  )
+    return;
+  let deletionBlocked = false;
   const keys = Object.keys(localStorage).filter(
     (k) => k.startsWith("beadgrid-") && k !== "beadgrid-cache-epoch",
   );
@@ -60,7 +65,11 @@ export async function resetLegacyProductCache() {
       r.onsuccess = () => {
         const db = r.result,
           tx = db.transaction("backup", "readwrite");
-        tx.objectStore("backup").put(backup, "before-public-accounts");
+        const store = tx.objectStore("backup"),
+          existing = store.get("before-public-accounts");
+        existing.onsuccess = () => {
+          if (!existing.result) store.put(backup, "before-public-accounts");
+        };
         tx.oncomplete = () => {
           db.close();
           resolve();
@@ -75,9 +84,14 @@ export async function resetLegacyProductCache() {
       const r = indexedDB.deleteDatabase("xing-local-v1");
       r.onsuccess = () => resolve();
       r.onerror = () => reject(r.error);
-      r.onblocked = () => resolve();
+      r.onblocked = () => {
+        deletionBlocked = true;
+        resolve();
+      };
     });
   }
   for (const k of keys) localStorage.removeItem(k);
+  if (deletionBlocked)
+    localStorage.setItem("beadgrid-legacy-delete-pending", "1");
   localStorage.setItem("beadgrid-cache-epoch", CACHE_EPOCH);
 }

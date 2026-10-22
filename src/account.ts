@@ -2,6 +2,7 @@ export type AccountUser = {
   id: number;
   uid?: string;
   exportAccess?: boolean;
+  studioAccess?: boolean;
   exportQuotaAllowed?: boolean;
   heldCredits?: number;
   username: string;

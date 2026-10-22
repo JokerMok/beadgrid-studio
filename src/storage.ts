@@ -1,6 +1,6 @@
 import { deserialize, serialize, type Project } from "./model";
 import { validCloudSync } from "./cloud-sync";
-import {DATABASE_NAME} from "./cache-reset";
+import { DATABASE_NAME } from "./cache-reset";
 const open = () =>
   new Promise<IDBDatabase>((resolve, reject) => {
     const r = indexedDB.open(DATABASE_NAME, 1);
@@ -57,30 +57,11 @@ export const saveDraft = (p: Project, scope = localScope()) =>
   transaction("meta", "readwrite", (s) =>
     s.put(localSnapshot(p), "draft:" + scope),
   );
-const legacyScope = (raw: any) => {
-  const sync = validCloudSync(raw?.cloudSync, raw?.id);
-  if (sync) return `${sync.source}:user:${sync.userId}`;
-  return raw?.cloudSync ? "unassigned" : localScope();
-};
 export const loadDraft = async (scope = localScope()) => {
-  let raw = await transaction("meta", "readonly", (s) =>
+  const raw = await transaction("meta", "readonly", (s) =>
     s.get("draft:" + scope),
   );
-  if (!raw) {
-    const legacy = await transaction("meta", "readonly", (s) => s.get("draft"));
-    if (legacy && legacyScope(legacy) === scope) raw = legacy;
-  }
   return raw ? restoreLocal(raw) : null;
-};
-export const loadLegacyDraft = async () => {
-  const raw = await transaction("meta", "readonly", (s) => s.get("draft"));
-  return raw ? restoreLocal(raw) : null;
-};
-export const listUnassigned = async () => {
-  const all = await transaction("projects", "readonly", (s) => s.getAll());
-  return all
-    .filter((raw) => !raw.owner && legacyScope(raw) !== localScope())
-    .map((raw) => restoreLocal(raw));
 };
 export const saveLocal = (p: Project, scope = localScope()) =>
   transaction("projects", "readwrite", (s) =>
@@ -95,7 +76,7 @@ export const listLocal = async (scope = localScope()) => {
   const all = await transaction("projects", "readonly", (s) => s.getAll()),
     byId = new Map<string, Project>();
   for (const raw of all
-    .filter((p) => p.owner === scope || (!p.owner && legacyScope(p) === scope))
+    .filter((p) => p.owner === scope)
     .sort((a, b) => Number(!!a.owner) - Number(!!b.owner))) {
     const p = restoreLocal({ ...raw, id: raw.projectId || raw.id });
     byId.set(p.id, p);
@@ -104,9 +85,6 @@ export const listLocal = async (scope = localScope()) => {
 };
 export const removeLocal = async (id: string, scope = localScope()) => {
   await transaction("projects", "readwrite", (s) => s.delete(scope + "|" + id));
-  const raw = await transaction("projects", "readonly", (s) => s.get(id));
-  if (raw && !raw.owner && legacyScope(raw) === scope)
-    await transaction("projects", "readwrite", (s) => s.delete(id));
 };
 export function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob),

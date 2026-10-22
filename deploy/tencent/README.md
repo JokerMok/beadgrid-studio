@@ -20,7 +20,7 @@ bash deploy/tencent/deploy.sh
 bash deploy/tencent/deploy.sh <SHA>
 ```
 
-脚本从 Git 配置检查 origin，未指定提交时查询远端默认分支，再 fetch 并固定准确 SHA。通过 `git archive` 取得干净源码，按该提交锁文件安装依赖、正式构建，只传输 dist、后端源码与依赖清单。工作树里的 v1.5 等未提交应用修改不会参与部署。部署脚本与 systemd/Caddy 模板属于运维配置，单独复制到 release 的 `ops/`。
+脚本从 Git 配置检查 origin，未指定提交时查询远端默认分支，再 fetch 并固定准确 SHA。通过 `git archive` 取得干净源码，按该提交锁文件安装依赖、正式构建，只传输 dist、后端源码与依赖清单。必须先提交并推送本机修改，按远端同一准确SHA发布；工作树不会混入部署。部署脚本与 systemd/Caddy 模板属于运维配置，单独复制到 release 的 `ops/`。
 
 服务器 GitHub 拉取不是必需条件。源码在本机取得，上传包及官方 Linux x64 Node v24.22.0 压缩包均校验 SHA256。Node 原始校验表：<https://nodejs.org/dist/v24.22.0/SHASUMS256.txt>。后端生产依赖在每个新 release 中按锁文件安装，不覆盖旧 release。
 
@@ -40,7 +40,7 @@ ssh tencent-main 'sudo systemctl status beadgrid-studio --no-pager'
 ssh tencent-main 'sudo journalctl -u beadgrid-studio -n 60 --no-pager'
 ```
 
-Mac 18181 → SSH → 服务器 Caddy `127.0.0.1:18081` → API `127.0.0.1:18871`。静态文件由 Caddy 正式服务，不运行 Vite。前端 API 使用同源 `/api`，没有指向访问者 localhost 的跨站后端请求。生产Cookie已设置COOKIE_SECURE=1，使用Secure/HttpOnly/SameSite=Strict；账号操作使用正式HTTPS入口。旧HTTP隧道仅保留作诊断，不作为正式账号入口。
+Mac 18181 → SSH → 服务器 Caddy `127.0.0.1:18081` → API `127.0.0.1:18871`。静态文件由 Caddy 正式服务，不运行 Vite。前端 API 使用同源 `/api`，没有指向访问者 localhost 的跨站后端请求。生产OIDC Cookie设置COOKIE_SECURE=1，使用__Host-前缀、Secure/HttpOnly/SameSite=Lax、无Domain；账号操作使用正式HTTPS入口。旧HTTP隧道仅保留作诊断，不作为正式账号入口。
 
 生产配置 `shared/config/app.env`（root 0600），SQLite `shared/data/studio.sqlite`（beadgrid 专用系统用户，目录0700）。本项目图片保存在浏览器或账号作品 JSON 内，当前没有服务器独立上传接口；预留 `shared/uploads`。不上传本机数据库、账号、.env 或私人作品。发布不会覆盖这些路径。
 
@@ -57,3 +57,16 @@ bash deploy/tencent/rollback.sh
 回退脚本只在 previous 存在且后端相同的情况下切换代码，保留数据库；不同后端必须先单独核对迁移兼容性。手工数据库恢复前先停本项目服务、保存当前数据库及 WAL，恢复一致性备份后校验，再启动；不能把当前运行数据库文件直接覆盖。
 
 禁止运行全局 prune、down -v、删除 shared 或停止其他项目。服务日志在 journald；访问日志 `/var/log/caddy/beadgrid-studio-access.log` 使用既有轮转规则。
+
+
+## v1.7公共账号切换（2026-10-22）
+
+当前账号中心已正式登记beadgrid/zhenyi-beadgrid，精确回调https://pindou.shizibandu.icu/auth/callback/beadgrid。先由受限root运维工具register-accounts.mjs检查/登记；中心配置前使用既有backup，私密配置只新增拼豆条目，产品只收到自己的配置。不得在生产运行公共中心setup/npm start，不让产品访问中心数据库。应用凭据在shared/config/app.env，不进Git或前端。
+
+首次切换已经执行：`RESET_BEADGRID_ACCOUNTS=1 DB_CHANGE_REVIEWED=1 bash deploy/tencent/deploy.sh <已推送SHA>`。该开关只用于明确授权的本次旧账号清理，**后续更新不要重复设置RESET_BEADGRID_ACCOUNTS**。常规更新沿用deploy.sh，保护现在的公共UID关联、作品和任务。后端改变仍需审查兼容性再设置DB_CHANGE_REVIEWED。
+
+旧密码数据库v1与新OIDC数据库v3不兼容，不自动迁移。首次切换前在线一致备份，停止拼豆后将shared/data和shared/uploads精确移入该次回退快照（legacy-data、legacy-uploads），建立空业务目录并注入accounts-next.env。没有删除公共账号中心、其他产品、源码、色卡或默认原图。恢复旧版必须代码+旧数据库+旧配置一起恢复，不能只切软链接。
+
+受控回退（仅服务器root、确认回退目标后）：`bash /srv/apps/beadgrid-studio/deploy/rollback-accounts.sh 20261022T013056Z-c1404b11f0bd`。会保存新OIDC数据副本，再恢复切换前旧数据；不清理中心用户/应用。当前没有真正执行生产回退，SQLite一致性和备份可读已校验。
+
+Caddy已为本项目/auth/*和/admin增加同源路由，并跳过/auth/*访问日志；中心站点仅为/api/v1/products/beadgrid/*跳过访问日志，避免X-User-Token记录。没有覆盖全局Caddyfile或影响其他站点。中心注册脚本、QA脚本属于运维工具，非产品运行入口；QA脚本只允许两个明确专用测试消费者与beadgrid，不是全量测试或生产初始化。

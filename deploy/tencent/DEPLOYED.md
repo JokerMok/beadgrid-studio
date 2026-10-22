@@ -1,41 +1,13 @@
-# BeadGrid Studio 首次部署与域名接入记录（v1.4历史）
+# 拼豆v1.7公共账号上线
 
-部署及域名启用日期：2026-10-20（北京时间）。应用版本 **1.4.0**，远端默认分支 **main**。
+日期：2026-10-22（北京时间）。正式入口https://pindou.shizibandu.icu/，准确当前提交见正式`/deployment.json`与服务器current/RELEASE.json，服务器PROJECT.md记录同一SHA。首次账号切换提交c1404b11f0bd3d8785b86cb259c74c226a821a78；随后定向修正权限检查、旧缓存入口及加载反馈，使用同一Git提交干净构建发布。
 
-完整提交：`f7f97e77c592c449db6a6eb01220cf6cb10c2acc`。
-仓库：<https://github.com/JokerMok/beadgrid-studio>。
-发布：`20261020T012905Z-f7f97e77c592`。
+旧拼豆数据已按授权清空新业务目录，无账号/作品/会员迁移。切换前一致SQLite备份和原目录：`/srv/apps/beadgrid-studio/shared/config/rollbacks/20261022T013056Z-c1404b11f0bd/`，包含business/beadgrid-studio/studio.sqlite、legacy-data、legacy-uploads及旧环境/服务/站点和old-release。旧库integrity_check=ok，旧作品1条；新库独立identities/sessions/login_attempts/works/export_jobs，无旧users/password或会员账本。保留v1.5旧代码和可用回退脚本，未实际回切生产。
 
-本记录描述首次v1.4部署，当时未包含本机v1.5修改。后续实时运行版本以正式站点`/deployment.json`和服务器PROJECT.md为准，本页不作为当前提交SHA的唯一依据。
-源码归档SHA256：`c0286ee8dcb825d5bf3952506e265c6be73c92b5ad5fffed67b897a4d123be34`。
-Node Linux x64运行时v24.22.0，官方归档SHA256：`cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008`。
+公共中心配置前备份`/srv/backups/zhenyi-accounts/manual-2026-10-22T01-12-49-290Z-d7e808.tar.gz`；仅登记beadgrid应用/产品/功能及其私密键，源码仍237e220ffac3db134982a56b3b7997f13eaff4a1，未改其他真实产品。只有center按需重启。产品进程不持有中心数据库或管理员凭据，独立__Host-会话及用户UID关联。
 
-## 当前入口
+真实公网专用A/B消费者验证注册、现有账号登录、回调/刷新、作品越权、身份切换；统一后台同一业务服务开通A会员、B次数并保留审计；以QA用户服务端真实3秒到期验证降级，无前端改时间。完整图纸、马赛克、色卡、物理拼板、分区、CSV/清单图片、项目文件实际下载解码。普通计次任务重复请求、取消、提交响应丢失和重复领取验证。后台未知确认响应与退出后恢复另由隔离测试验证，不在生产给全中心注入故障。
 
-正式入口：<https://pindou.shizibandu.icu/>。HTTP自动308跳转到HTTPS，Caddy签发并维护Let’s Encrypt证书（SAN=pindou.shizibandu.icu，本次签发到期2027-01-18）。Mac、SSH或Codex关闭不影响公网服务。
+证据：verification/accounts-integration-20261022/中的browser-results.json、followup-results.json、final-results.json、截图和真实downloads；未纳入Git的私密浏览器会话/QA口令位于.local-public/account-integration，只用于验收。原本机4个旧业务数据目录已停相应服务、一致备份及归档，记录在.local-public/account-integration/legacy-local-data-20261022T013853Z/MANIFEST.json；旧项目Tunnel已停止，不影响其他项目Tunnel。
 
-DNSPod仅新增pindou A记录175.178.236.56，TTL600，无AAAA；主域名、www等记录未修改。腾讯云备案控制台显示主域名及腾讯云接入状态正常；备案关联云资源IP与当前部署IP不同，未变更备案记录。系统与云端仅新增IPv4 TCP80/443，SSH原规则保留。
-
-服务器：`tencent-main`；项目 `/srv/apps/beadgrid-studio/`。
-Caddy `127.0.0.1:18081`；API `127.0.0.1:18871`；内部端口均未向公网监听；公网只开放Caddy80/443。既有ops-check及防火墙SSH规则保持原配置。
-
-## 实际结果
-
-本次域名回归：真实Chromium默认校验证书通过，HTTP跳转、SPA刷新、bamboo上传生成、CSV/清单PNG实际下载、草稿恢复、HTTPS注册登录、安全Cookie、账号保存/隔离、同源资源/Worker及来源校验通过，无页面错误。证据：`verification/tencent-domain/results.json`；原内部部署证据继续保留。
-
-- 服务器入口页面、SPA刷新及准确提交版本
-- 真实上传、Worker转换、用量守恒、CSV/清单图片实际下载及刷新恢复
-- 注册、登录、账号作品保存、服务重启后数据持久化及账号隔离
-- 同源API、跨站写入拒绝与认证校验
-- 静态资源及Worker成功加载、无页面错误、无外部或错误localhost请求
-- SQLite在线backup及独立内存库恢复后integrity_check通过；备份钩子已接入既有日备份任务。
-- 专用测试账号、会话与作品按准确ID/账号清理，没有复制本机私人数据，也未清理其他账号的数据。
-- systemd已启用，项目服务重启后账号作品和同步版本仍保留；未进行整机重启。
-
-原始运行结果、实际下载及截图：`verification/tencent-deploy/`。页面请求仅来自18181同源入口。类型检查与构建使用此SHA的干净源码，未重复整站算法或无关全量回归。
-
-首次部署没有历史previous。后续更新保留旧release并在启用失败时回退代码/配置；本次没有触发生产故障回退，也没有数据库迁移。SQLite备份仅在同一服务器，尚无异机备份。公网域名及HTTPS已完成，TCP80/443已放行。生产Cookie设置Secure/HttpOnly/SameSite=Strict，API同源。
-
-## 更新
-
-在本地仓库根目录执行 `bash deploy/tencent/deploy.sh`，默认部署远端默认分支最新提交；也可传入已存在于origin的完整SHA。详细步骤、数据边界及回退说明见[README.md](README.md)。不要在脏工作树直接打包源码，也不要把本机data/.env传到服务器。
+规则：本地编辑/备份不计次；studio/cloud access向所有正常登录消费者开放；export_member为独立会员免次access；否则export按每任务1次，初始免费0保持旧本机规则。会员和次数分别管理，不把其他产品会员或单个member布尔值当无限次数。后台“用户与权益”选拼豆，分别“开通会员”和“赠送额度（export）”，原因必填；兑换仍在中心tab=redeem。未接真实支付，邮件/短信外部配置沿中心现状。

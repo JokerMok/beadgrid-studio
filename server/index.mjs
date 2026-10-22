@@ -99,6 +99,14 @@ app.get("/api/health", (_, res) => res.json({ ok: true, authMode: "oidc" }));
 const accounts = installAccounts({ app, db, rate }),
   auth = accounts.auth;
 installExports({ app, db, dataDir, accounts });
+app.use("/api/works", auth, async (req, res, next) => {
+  try {
+    await accounts.access(req, "cloud");
+    next();
+  } catch (e) {
+    next(e);
+  }
+});
 function validateProject(v) {
   if (
     !v ||
@@ -192,7 +200,6 @@ app.get("/api/works/:id", auth, (req, res) => {
   });
 });
 app.put("/api/works/:id", auth, accounts.account, async (req, res) => {
-  await accounts.access(req, "cloud");
   // A login change in another tab changes the shared cookie, not this tab's UI.
   if (
     req.body.expectedUserId !== undefined &&
@@ -242,7 +249,6 @@ app.put("/api/works/:id", auth, accounts.account, async (req, res) => {
   res.json({ ok: true, updated });
 });
 app.delete("/api/works/:id", auth, accounts.account, async (req, res) => {
-  await accounts.access(req, "cloud");
   const result = db
     .prepare("DELETE FROM works WHERE id=? AND user_id=?")
     .run(req.params.id, req.user.id);
@@ -251,7 +257,6 @@ app.delete("/api/works/:id", auth, accounts.account, async (req, res) => {
     .json(result.changes ? { ok: true } : { error: "作品不存在或无权访问" });
 });
 app.patch("/api/works/:id", auth, accounts.account, async (req, res) => {
-  await accounts.access(req, "cloud");
   const w = db
     .prepare("SELECT * FROM works WHERE id=? AND user_id=?")
     .get(req.params.id, req.user.id);
@@ -273,7 +278,6 @@ app.patch("/api/works/:id", auth, accounts.account, async (req, res) => {
   res.json({ ok: true, updated: p.updatedAt });
 });
 app.post("/api/works/:id/copy", auth, accounts.account, async (req, res) => {
-  await accounts.access(req, "cloud");
   const w = db
     .prepare("SELECT * FROM works WHERE id=? AND user_id=?")
     .get(req.params.id, req.user.id);
