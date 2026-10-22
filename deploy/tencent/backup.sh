@@ -15,5 +15,9 @@ with sqlite3.connect(f'file:{source}?mode=ro', uri=True, timeout=30) as src:
         src.backup(dst)
         if dst.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
             raise RuntimeError('SQLite backup integrity check failed')
-(out / 'README.txt').write_text('SQLite online backup; project images are stored inside works.data. No standalone server uploads in this commit.\n')
+(out / 'README.txt').write_text('SQLite online backup; project images are stored inside works.data. OIDC v1.7 artifacts in exports/ and any product uploads are copied separately.\n')
 PY
+
+# Private files/artifacts may contain user work. Keep them within the private backup target.
+if [[ -d /srv/apps/beadgrid-studio/shared/data/exports ]]; then cp -a /srv/apps/beadgrid-studio/shared/data/exports "$out/exports"; fi
+if [[ -d /srv/apps/beadgrid-studio/shared/uploads ]]; then cp -a /srv/apps/beadgrid-studio/shared/uploads "$out/uploads"; fi

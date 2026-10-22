@@ -27,7 +27,7 @@ tar -xf "$work/source.tar" -C "$work/source"
 cp -R "$work/source/dist" "$work/bundle/dist"
 cp -R "$work/source/server" "$work/bundle/server"
 cp "$work/source/package.json" "$work/source/package-lock.json" "$work/bundle/"
-cp deploy/tencent/{beadgrid-studio.service,beadgrid-studio.caddy,backup.sh,remote-release.sh} "$work/bundle/ops/"
+cp deploy/tencent/{beadgrid-studio.service,beadgrid-studio.caddy,backup.sh,remote-release.sh,rollback-accounts.sh} "$work/bundle/ops/"
 version=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1])).version" "$work/source/package.json")
 python3 - "$work" "$sha" "$version" "$remote" <<'PY'
 import datetime, hashlib, json, pathlib, subprocess, sys
@@ -53,6 +53,6 @@ fi
 tar -czf "$work/bundle.tar.gz" -C "$work/bundle" .
 digest=$(shasum -a 256 "$work/bundle.tar.gz" | awk '{print $1}')
 scp "$work/bundle.tar.gz" "tencent-main:/srv/apps/beadgrid-studio/incoming/$release.tar.gz"
-ssh -o BatchMode=yes tencent-main "cd /srv/apps/beadgrid-studio/incoming && echo '$digest  $release.tar.gz' | sha256sum -c - && mkdir '$release' && tar -xzf '$release.tar.gz' -C '$release' && bash '$release/ops/remote-release.sh' '$release' '$sha' '$version' '${DB_CHANGE_REVIEWED:-0}'"
+ssh -o BatchMode=yes tencent-main "cd /srv/apps/beadgrid-studio/incoming && echo '$digest  $release.tar.gz' | sha256sum -c - && mkdir '$release' && tar -xzf '$release.tar.gz' -C '$release' && bash '$release/ops/remote-release.sh' '$release' '$sha' '$version' '${DB_CHANGE_REVIEWED:-0}' '${RESET_BEADGRID_ACCOUNTS:-0}'"
 printf '%s\n' "$release" > "$root/.local-public/tencent-deploy/latest-release"
 printf 'Deployed %s (%s). Access: https://pindou.shizibandu.icu/\n' "$sha" "$version"

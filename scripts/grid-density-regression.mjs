@@ -168,7 +168,7 @@ try {
           let r = indexedDB.open("xing-local-v1", 1);
           r.onsuccess = () => {
             let db = r.result,
-              q = db.transaction("meta").objectStore("meta").get("draft");
+              q = db.transaction("meta").objectStore("meta").get("draft:"+window.location.origin+"/api:guest");
             q.onsuccess = () => {
               resolve(q.result);
               db.close();
@@ -320,6 +320,7 @@ try {
   delete diagnostics.demo;
   report.diagnostics = diagnostics;
   assert.deepEqual(report.pageErrors, []);
+  delete report.error;
   report.status = "passed";
 } catch (e) {
   report.status = "failed";

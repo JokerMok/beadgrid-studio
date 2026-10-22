@@ -11,17 +11,19 @@ export default function Dialog({
   onClose: () => void;
   wide?: boolean;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLDivElement>(null),
+    closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     const prev = document.activeElement as HTMLElement;
     const node = ref.current;
     node?.focus();
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") closeRef.current();
       if (e.key === "Tab" && node) {
         const items = [
           ...node.querySelectorAll<HTMLElement>(
-            'button:not([disabled]),input,select,textarea,[tabindex="0"]',
+            'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex="0"]',
           ),
         ].filter((el) => el.offsetParent !== null);
         const first = items[0],

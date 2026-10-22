@@ -1,26 +1,31 @@
 import express from "express";
 import { DatabaseSync } from "node:sqlite";
-import {
-  randomBytes,
-  scrypt as scryptCb,
-  timingSafeEqual,
-  createHash,
-} from "node:crypto";
-import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isIP } from "node:net";
-if (fs.existsSync(".env")) process.loadEnvFile(".env");
-const scrypt = promisify(scryptCb),
-  root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
+import { installAccounts } from "./accounts.mjs";
+import { installExports } from "./exports.mjs";
+const envFile =
+  process.env.ENV_FILE === "none" ? null : process.env.ENV_FILE || ".env";
+if (envFile && fs.existsSync(envFile)) process.loadEnvFile(envFile);
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
   dataDir = path.resolve(process.env.DATA_DIR || path.join(root, "data"));
 fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 const db = new DatabaseSync(path.join(dataDir, "studio.sqlite"));
-db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
-db.exec(`CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,username TEXT NOT NULL UNIQUE,password TEXT NOT NULL,created INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),expires INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS works(id TEXT NOT NULL,user_id INTEGER NOT NULL REFERENCES users(id),title TEXT NOT NULL,data TEXT NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(id,user_id));`);
+db.exec(
+  "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+);
+if (
+  db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='users'",
+    )
+    .get()
+)
+  throw Error(
+    "Legacy beadgrid database found. Back up and switch to a new, empty product data directory; no automatic migration.",
+  );
 const app = express();
 const trustedProxies = (process.env.TRUSTED_PROXIES || "")
   .split(",")
@@ -73,34 +78,7 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.use(express.json({ limit: "16mb" }));
-const hashToken = (token) => createHash("sha256").update(token).digest("hex");
-const cookie = (res, token, clear = false) =>
-  res.cookie("studio_session", token, {
-    httpOnly: true,
-    sameSite: "strict",
-    secure: process.env.COOKIE_SECURE === "1",
-    path: "/",
-    maxAge: clear ? 0 : 7 * 864e5,
-  });
-app.use("/api", (req, res, next) => {
-  const token = (req.headers.cookie || "")
-    .split(";")
-    .map((s) => s.trim())
-    .find((s) => s.startsWith("studio_session="))
-    ?.slice(15);
-  if (token) {
-    req.sessionHash = hashToken(token);
-    req.user = db
-      .prepare(
-        "SELECT users.id, users.username FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>?",
-      )
-      .get(req.sessionHash, Date.now());
-  }
-  next();
-});
-const auth = (req, res, next) =>
-  req.user ? next() : res.status(401).json({ error: "请先登录" });
+app.use(express.json({ limit: "64mb" }));
 const attempts = new Map();
 function rate(req, res, next) {
   const now = Date.now(),
@@ -111,84 +89,16 @@ function rate(req, res, next) {
     attempts.set(key, a);
   }
   if (++a.count > 60)
-    return res.status(429).json({ error: "操作过于频繁，请10分钟后再试" });
+    return res.status(429).json({ error: "操作频繁，请稍后再试" });
   if (attempts.size > 5000)
     for (const [k, v] of attempts)
       if (now - v.start > 600000) attempts.delete(k);
   next();
 }
-function credentials(body) {
-  const username = String(body?.username || "")
-      .trim()
-      .toLowerCase(),
-    password = body?.password;
-  if (!/^[\p{L}\p{N}_@.\-]{3,64}$/u.test(username))
-    throw Error("账号需3～64位，仅含文字、数字、_ @ . -");
-  if (
-    typeof password !== "string" ||
-    password.length < 10 ||
-    password.length > 128
-  )
-    throw Error("密码需10～128位");
-  return { username, password };
-}
-async function createSession(res, id) {
-  db.prepare("DELETE FROM sessions WHERE expires<?").run(Date.now());
-  const token = randomBytes(32).toString("hex");
-  db.prepare("INSERT INTO sessions VALUES(?,?,?)").run(
-    hashToken(token),
-    id,
-    Date.now() + 7 * 864e5,
-  );
-  cookie(res, token);
-}
-app.get("/api/health", (_, res) => res.json({ ok: true }));
-app.get("/api/me", (req, res) => res.json({ user: req.user || null }));
-app.post("/api/register", rate, async (req, res) => {
-  let c;
-  try {
-    c = credentials(req.body);
-  } catch (e) {
-    return res.status(400).json({ error: e.message });
-  }
-  const salt = randomBytes(16).toString("hex"),
-    derived = (await scrypt(c.password, salt, 64)).toString("hex");
-  let id;
-  try {
-    id = db
-      .prepare("INSERT INTO users(username,password,created) VALUES(?,?,?)")
-      .run(c.username, `${salt}:${derived}`, Date.now()).lastInsertRowid;
-  } catch {
-    return res.status(409).json({ error: "此账号已被使用" });
-  }
-  await createSession(res, id);
-  res.status(201).json({ user: { id: Number(id), username: c.username } });
-});
-app.post("/api/login", rate, async (req, res) => {
-  let c;
-  try {
-    c = credentials(req.body);
-  } catch (e) {
-    return res.status(400).json({ error: e.message });
-  }
-  const user = db
-      .prepare("SELECT * FROM users WHERE username=?")
-      .get(c.username),
-    [salt, expected] = (
-      user?.password || "00000000000000000000000000000000:" + "00".repeat(64)
-    ).split(":"),
-    actual = await scrypt(c.password, salt, 64);
-  if (!user || !timingSafeEqual(actual, Buffer.from(expected, "hex")))
-    return res.status(401).json({ error: "账号或密码错误" });
-  await createSession(res, user.id);
-  res.json({ user: { id: user.id, username: user.username } });
-});
-app.post("/api/logout", (req, res) => {
-  if (req.sessionHash)
-    db.prepare("DELETE FROM sessions WHERE token=?").run(req.sessionHash);
-  cookie(res, "", true);
-  res.json({ ok: true });
-});
+app.get("/api/health", (_, res) => res.json({ ok: true, authMode: "oidc" }));
+const accounts = installAccounts({ app, db, rate }),
+  auth = accounts.auth;
+installExports({ app, db, dataDir, accounts });
 function validateProject(v) {
   if (
     !v ||
@@ -233,7 +143,7 @@ function validateProject(v) {
     !/^[a-zA-Z0-9-]{8,80}$/.test(v.id)
   )
     throw Error("作品标识或标题无效");
-  for (const s of [v.source, v.reference?.url])
+  for (const s of [v.source, v.reference?.url, v.reference?.rawUrl])
     if (
       s !== undefined &&
       (typeof s !== "string" ||
@@ -241,10 +151,28 @@ function validateProject(v) {
         !/^data:image\/(png|jpeg|webp);base64,[a-zA-Z0-9+/=]+$/.test(s))
     )
       throw Error("图片格式无效");
+  if (v.generationBase)
+    validateProject({
+      ...v,
+      width: v.generationBase.width,
+      height: v.generationBase.height,
+      patternRle: v.generationBase.patternRle,
+      generationBase: undefined,
+      variants: undefined,
+    });
+  if (v.variants)
+    for (const key of ["normal", "handmade"])
+      validateProject({
+        ...v,
+        patternRle: v.variants[key],
+        generationBase: undefined,
+        variants: undefined,
+      });
   return v;
 }
 app.get("/api/works", auth, (req, res) =>
   res.json({
+    userId: req.user.id,
     works: db
       .prepare(
         "SELECT id,title,updated FROM works WHERE user_id=? ORDER BY updated DESC",
@@ -263,18 +191,17 @@ app.get("/api/works/:id", auth, (req, res) => {
     userId: req.user.id,
   });
 });
-app.put("/api/works/:id", auth, (req, res) => {
+app.put("/api/works/:id", auth, accounts.account, async (req, res) => {
+  await accounts.access(req, "cloud");
   // A login change in another tab changes the shared cookie, not this tab's UI.
   if (
     req.body.expectedUserId !== undefined &&
     req.body.expectedUserId !== req.user.id
   )
-    return res
-      .status(412)
-      .json({
-        error: "登录账号已改变，请刷新页面后重新保存",
-        code: "ACCOUNT_CHANGED",
-      });
+    return res.status(412).json({
+      error: "登录账号已改变，请刷新页面后重新保存",
+      code: "ACCOUNT_CHANGED",
+    });
   let v;
   try {
     v = validateProject(req.body.project);
@@ -303,18 +230,19 @@ app.put("/api/works/:id", auth, (req, res) => {
     !existing &&
     db
       .prepare("SELECT count(*) AS n FROM works WHERE user_id=?")
-      .get(req.user.id).n >= 50
+      .get(req.user.id).n >= accounts.rules.workLimit
   )
     return res
       .status(400)
-      .json({ error: "每个账号最多保存50个作品，请先备份并移除旧作品" });
+      .json({ error: "账号作品数量达到本服务上限，请先备份并移除旧作品" });
   const updated = Math.max(Date.now(), (existing?.updated || 0) + 1);
   db.prepare(
     "INSERT INTO works VALUES(?,?,?,?,?) ON CONFLICT(id,user_id) DO UPDATE SET title=excluded.title,data=excluded.data,updated=excluded.updated",
   ).run(v.id, req.user.id, v.name, JSON.stringify(v), updated);
   res.json({ ok: true, updated });
 });
-app.delete("/api/works/:id", auth, (req, res) => {
+app.delete("/api/works/:id", auth, accounts.account, async (req, res) => {
+  await accounts.access(req, "cloud");
   const result = db
     .prepare("DELETE FROM works WHERE id=? AND user_id=?")
     .run(req.params.id, req.user.id);
@@ -322,23 +250,87 @@ app.delete("/api/works/:id", auth, (req, res) => {
     .status(result.changes ? 200 : 404)
     .json(result.changes ? { ok: true } : { error: "作品不存在或无权访问" });
 });
+app.patch("/api/works/:id", auth, accounts.account, async (req, res) => {
+  await accounts.access(req, "cloud");
+  const w = db
+    .prepare("SELECT * FROM works WHERE id=? AND user_id=?")
+    .get(req.params.id, req.user.id);
+  if (!w) return res.status(404).json({ error: "作品不存在或无权访问" });
+  if (req.body.expectedUpdated !== w.updated)
+    return res
+      .status(409)
+      .json({ error: "作品版本已改变，请重新打开后重命名" });
+  const title = String(req.body.title || "")
+    .trim()
+    .slice(0, 120);
+  if (!title) return res.status(400).json({ error: "作品名不能为空" });
+  const p = JSON.parse(w.data);
+  p.name = title;
+  p.updatedAt = Math.max(Date.now(), w.updated + 1);
+  db.prepare(
+    "UPDATE works SET title=?,data=?,updated=? WHERE id=? AND user_id=?",
+  ).run(title, JSON.stringify(p), p.updatedAt, w.id, req.user.id);
+  res.json({ ok: true, updated: p.updatedAt });
+});
+app.post("/api/works/:id/copy", auth, accounts.account, async (req, res) => {
+  await accounts.access(req, "cloud");
+  const w = db
+    .prepare("SELECT * FROM works WHERE id=? AND user_id=?")
+    .get(req.params.id, req.user.id);
+  if (!w) return res.status(404).json({ error: "作品不存在或无权访问" });
+  if (
+    db.prepare("SELECT count(*) n FROM works WHERE user_id=?").get(req.user.id)
+      .n >= accounts.rules.workLimit
+  )
+    return res.status(400).json({ error: "账号作品数量达到上限" });
+  const p = JSON.parse(w.data);
+  p.id = crypto.randomUUID();
+  p.name = p.name.slice(0, 112) + " · 副本";
+  p.updatedAt = Date.now();
+  db.prepare("INSERT INTO works VALUES(?,?,?,?,?)").run(
+    p.id,
+    req.user.id,
+    p.name,
+    JSON.stringify(p),
+    p.updatedAt,
+  );
+  res
+    .status(201)
+    .json({ project: p, updated: p.updatedAt, userId: req.user.id });
+});
 app.use("/api", (_, res) => res.status(404).json({ error: "接口不存在" }));
-app.use(express.static(path.join(root, "dist"), { index: "index.html" }));
+const staticDir = path.resolve(
+  process.env.STATIC_DIR || path.join(root, "dist"),
+);
+app.use(express.static(staticDir, { index: "index.html" }));
 app.get("/{*path}", (_, res) => {
-  if (fs.existsSync(path.join(root, "dist/index.html")))
-    res.sendFile(path.join(root, "dist/index.html"));
+  if (fs.existsSync(path.join(staticDir, "index.html")))
+    res.sendFile(path.join(staticDir, "index.html"));
   else res.status(200).send("开发模式前端地址：http://127.0.0.1:5173");
 });
 app.use((err, req, res, next) => {
   console.error("request error:", err.type || err.name);
-  res.status(err.status || 500).json({
-    error:
-      err.type === "entity.too.large"
-        ? "项目超过16MB，请缩小原图"
-        : err instanceof SyntaxError
-          ? "请求JSON无效"
-          : "服务器处理失败，请稍后重试",
-  });
+  res
+    .status(
+      err.outcome
+        ? err.outcome === "unknown"
+          ? 503
+          : err.status || 403
+        : err.status || 500,
+    )
+    .json({
+      error:
+        err.type === "entity.too.large"
+          ? "项目超过64MB，请减少版本或压缩原图"
+          : err instanceof SyntaxError
+            ? "请求JSON无效"
+            : err.status && err.status < 500
+              ? err.message
+              : err.status === 503
+                ? err.message
+                : "服务器处理失败，请稍后重试",
+      code: err.code,
+    });
 });
 const host = process.env.HOST || "127.0.0.1",
   port = Number(process.env.PORT || 8787);

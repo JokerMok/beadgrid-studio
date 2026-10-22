@@ -1,6 +1,6 @@
 {
   "name": "beadgrid-studio",
-  "version": "1.5.0",
+  "version": "1.7.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,8 +13,13 @@
     "public:restart": "node scripts/public-tunnel.mjs restart",
     "check": "tsc -b",
     "test": "node --import tsx --test tests/*.test.ts",
-    "test:browser": "node scripts/review-fixes-regression.mjs",
-    "test:parity": "node scripts/compare-conversion.mjs && node scripts/compare-advanced.mjs && node scripts/compare-export.mjs"
+    "test:browser": "node scripts/product-flow-browser.mjs",
+    "test:parity": "node scripts/compare-conversion.mjs && node scripts/compare-advanced.mjs && node scripts/compare-export.mjs",
+    "local:start": "node scripts/local-runtime.mjs start",
+    "local:status": "node scripts/local-runtime.mjs status",
+    "local:stop": "node scripts/local-runtime.mjs stop",
+    "build:local": "tsc -b && vite build --outDir .local-public/accounts-local/dist",
+    "test:accounts": "node --import tsx --test tests/accounts-integration.test.mjs"
   },
   "engines": {
     "node": ">=22.13"
@@ -23,6 +28,7 @@
     "@phosphor-icons/react": "^2.1.10",
     "express": "^5.1.0",
     "fflate": "^0.8.2",
+    "openid-client": "^6.8.8",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

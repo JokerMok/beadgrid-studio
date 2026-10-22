@@ -797,7 +797,10 @@ export default function ImportDialog({
             />
           </section>
         </fieldset>
-        <details className="import-advanced">
+        <details
+          className="import-advanced"
+          open={initial.mode === "recognize"}
+        >
           <summary>高级参数与精确裁剪</summary>
           <fieldset disabled={submitting}>
             <div className="import-advanced-grid">
@@ -911,6 +914,21 @@ export default function ImportDialog({
                 <label className="check">
                   <input
                     type="checkbox"
+                    aria-label="清除主要边缘背景（实验）"
+                    disabled={s.mode === "recognize"}
+                    checked={!!s.removeBackground}
+                    onChange={(e) =>
+                      update({ removeBackground: e.target.checked })
+                    }
+                  />
+                  清除主要边缘背景（实验）
+                </label>
+                <p className="micro">
+                  依据原站边缘色连通规则，非AI识别人像，可能误删与背景同色的身体或服装。仅此选项按原站上限1600px处理临时副本；保留原始图片，取消勾选可恢复。
+                </p>
+                <label className="check">
+                  <input
+                    type="checkbox"
                     checked={s.smallCleanup}
                     onChange={(e) => update({ smallCleanup: e.target.checked })}
                   />
@@ -936,7 +954,7 @@ export default function ImportDialog({
                     }
                   >
                     <option value="normal">普通转换</option>
-                    <option value="simple">手搓图（最多24色）</option>
+                    <option value="simple">简易图纸（最多24色）</option>
                     <option value="recognize">已对齐色号图识别</option>
                   </select>
                 </label>

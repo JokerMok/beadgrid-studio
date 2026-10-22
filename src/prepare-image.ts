@@ -1,3 +1,4 @@
+import { clearEdgeBackground } from "./background-image";
 import type { Settings } from "./model";
 export type Raster = { pixels: Uint8ClampedArray; size: number };
 const decode = (url: string, signal?: AbortSignal) =>
@@ -92,9 +93,24 @@ export async function prepareRaster(
   const g = canvas.getContext("2d", { willReadFrequently: true })!;
   g.imageSmoothingEnabled = !small;
   g.imageSmoothingQuality = "high";
-  const crop = s.fit === "crop" ? s.crop : { x: 0, y: 0, w: 1, h: 1 };
-  const sourceW = image.naturalWidth * crop.w,
-    sourceH = image.naturalHeight * crop.h;
+  let crop = s.fit === "crop" ? s.crop : { x: 0, y: 0, w: 1, h: 1 };
+  let sampleSource: HTMLImageElement | HTMLCanvasElement = image,
+    sourceWidth = image.naturalWidth,
+    sourceHeight = image.naturalHeight;
+  if (s.removeBackground) {
+    sampleSource = await clearEdgeBackground(
+      image,
+      sourceWidth,
+      sourceHeight,
+      crop,
+      signal,
+    );
+    sourceWidth = sampleSource.width;
+    sourceHeight = sampleSource.height;
+    crop = { x: 0, y: 0, w: 1, h: 1 };
+  }
+  const sourceW = sourceWidth * crop.w,
+    sourceH = sourceHeight * crop.h;
   const ratio = (s.placement === "cover" ? Math.max : Math.min)(
       canvas.width / sourceW,
       canvas.height / sourceH,
@@ -122,9 +138,9 @@ export async function prepareRaster(
   }
   // One resampling pass from the full original; no intermediate 1600px crop PNG.
   g.drawImage(
-    image,
-    crop.x * image.naturalWidth,
-    crop.y * image.naturalHeight,
+    sampleSource,
+    crop.x * sourceWidth,
+    crop.y * sourceHeight,
     sourceW,
     sourceH,
     dx,
@@ -134,7 +150,28 @@ export async function prepareRaster(
   );
   const pixels = g.getImageData(0, 0, canvas.width, canvas.height).data;
   canvas.width = canvas.height = 0;
+  if (sampleSource instanceof HTMLCanvasElement)
+    sampleSource.width = sampleSource.height = 0;
   image.src = "";
   signal?.throwIfAborted();
+  return { pixels, size };
+}
+
+/** Recognize exactly the placed tracing image, at full opacity. UI opacity is only a guide. */
+export async function prepareReferenceRaster(
+  p: import("./model").Project,
+): Promise<Raster> {
+  if (!p.reference) throw Error("请先添加并对齐底图");
+  const image = await decode(p.reference.url),
+    size = 7,
+    canvas = document.createElement("canvas");
+  canvas.width = p.width * size;
+  canvas.height = p.height * size;
+  const g = canvas.getContext("2d", { willReadFrequently: true })!;
+  g.imageSmoothingEnabled = false;
+  const r = p.reference;
+  g.drawImage(image, r.x * size, r.y * size, r.width * size, r.height * size);
+  const pixels = g.getImageData(0, 0, canvas.width, canvas.height).data;
+  canvas.width = canvas.height = 0;
   return { pixels, size };
 }

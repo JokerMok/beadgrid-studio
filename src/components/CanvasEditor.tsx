@@ -1,11 +1,14 @@
+import { drawIron } from "../ironing";
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { PALETTE, connected, type Project, type Tool } from "../model";
 type Props = {
+  guest?: boolean;
   project: Project;
   tool: Tool;
   color: number;
@@ -27,6 +30,7 @@ type Props = {
   };
 };
 export default function CanvasEditor({
+  guest = false,
   project: p,
   tool,
   color,
@@ -41,6 +45,16 @@ export default function CanvasEditor({
   fitKey,
   crop,
 }: Props) {
+  const regionRules = useMemo(
+    () =>
+      (p.colorRules || []).map((r) => ({
+        colors: new Set(r.colors),
+        indices: new Set(r.indices),
+      })),
+    [p.colorRules],
+  );
+  const regionAllows = (i: number) =>
+    !regionRules.some((r) => r.colors.has(color) && r.indices.has(i));
   const host = useRef<HTMLDivElement>(null),
     canvas = useRef<HTMLCanvasElement>(null),
     [size, setSize] = useState({ w: 800, h: 650 }),
@@ -207,7 +221,8 @@ export default function CanvasEditor({
             ny >= 0 &&
             nx < p.width &&
             ny < p.height &&
-            (!selection.size || selection.has(i))
+            (!selection.size || selection.has(i)) &&
+            (tool === "eraser" || regionAllows(i))
           )
             cells[i] = tool === "eraser" ? -1 : color;
         }
@@ -262,7 +277,8 @@ export default function CanvasEditor({
     const cells = p.cells.slice();
     if (tool === "fill") {
       for (const n of connected(cells, p.width, p.height, i))
-        if (!selection.size || selection.has(n)) cells[n] = color;
+        if ((!selection.size || selection.has(n)) && regionAllows(n))
+          cells[n] = color;
       change({ ...p, cells });
       return;
     }
@@ -471,21 +487,18 @@ export default function CanvasEditor({
             py = origin.y + y * cell;
           g.fillStyle = PALETTE[i].hex;
           if (p.view === "iron" && cell >= 5) {
-            g.beginPath();
-            g.roundRect(
-              px + 0.25,
-              py + 0.25,
-              cell - 0.5,
-              cell - 0.5,
-              cell * 0.2,
+            drawIron(
+              g,
+              px,
+              py,
+              cell,
+              PALETTE[i].hex,
+              p.settings.ironStyle || "regular",
+              x,
+              y,
             );
-            g.fill();
-            g.fillStyle = "#ffffff60";
-            g.beginPath();
-            g.arc(px + cell / 2, py + cell / 2, cell * 0.12, 0, Math.PI * 2);
-            g.fill();
           } else g.fillRect(px, py, cell + 0.2, cell + 0.2);
-          if (p.grid.codes && cell >= 14 && p.view !== "iron") {
+          if (!guest && p.grid.codes && cell >= 14 && p.view !== "iron") {
             const hex = PALETTE[i].hex,
               brightness =
                 parseInt(hex.slice(1, 3), 16) * 0.2126 +
@@ -639,7 +652,7 @@ export default function CanvasEditor({
         g.fillText(String(y + 1), origin.x - margin - 15, py);
       }
     }
-  }, [p, size, zoom, pan, selection, path, loaded]);
+  }, [p, guest, size, zoom, pan, selection, path, loaded]);
   return (
     <div ref={host} className="canvas-host" data-testid="canvas-host">
       <canvas

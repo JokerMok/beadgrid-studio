@@ -26,6 +26,7 @@ export type Tool =
 export type View = "beads" | "original" | "iron";
 export type Settings = {
   materialSpec?: MaterialSpec;
+  ironStyle?: import("./ironing").IronStyle;
   sourceAlignment?: import("./reference-recognition").SourceAlignment;
   skipCheckerboard?: boolean;
   similar?: boolean;
@@ -42,6 +43,7 @@ export type Settings = {
   zoom: number;
   panX: number;
   panY: number;
+  removeBackground?: boolean;
   removeLight: boolean;
   alpha: "keep" | "white";
   merge: number;
@@ -66,12 +68,26 @@ export type GridOptions = {
   blockColor?: string;
 };
 export type Reference = {
+  rawUrl?: string;
+  backgroundRemoved?: boolean;
   url: string;
   opacity: number;
   x: number;
   y: number;
   width: number;
   height: number;
+};
+export type PatternSnapshot = {
+  width: number;
+  height: number;
+  cells: Int16Array;
+  settings: Settings;
+  createdAt: number;
+};
+export type PatternVariants = {
+  active: "normal" | "handmade";
+  normal: Int16Array;
+  handmade: Int16Array;
 };
 export type Project = {
   id: string;
@@ -88,6 +104,10 @@ export type Project = {
   reference?: Reference;
   updatedAt: number;
   cloudSync?: CloudSync;
+  colorRules?: import("./color-rules").ColorRegionRule[];
+  generationBase?: PatternSnapshot;
+  variants?: PatternVariants;
+  assemblyProgress?: number[];
 };
 export const defaults = (width = 52, height = 52): Settings => ({
   smallCleanup: false,
@@ -157,6 +177,22 @@ export function serialize(p: Project) {
     width: p.width,
     height: p.height,
     patternRle: encodeRle(p.cells),
+    generationBase: p.generationBase
+      ? {
+          ...p.generationBase,
+          cells: undefined,
+          patternRle: encodeRle(p.generationBase.cells),
+        }
+      : undefined,
+    variants: p.variants
+      ? {
+          active: p.variants.active,
+          normal: encodeRle(p.variants.normal),
+          handmade: encodeRle(p.variants.handmade),
+        }
+      : undefined,
+    assemblyProgress: p.assemblyProgress,
+    colorRules: p.colorRules,
     settings: p.settings,
     source: p.source,
     sourceName: p.sourceName,
@@ -211,6 +247,58 @@ export function deserialize(raw: unknown): Project {
     cursor += count;
   }
   if (cursor !== cells.length) throw Error("项目网格长度不匹配");
+  const decodeSnapshot = (value: number[], width: number, height: number) =>
+    deserialize({
+      ...v,
+      width,
+      height,
+      patternRle: value,
+      generationBase: undefined,
+      colorRules: undefined,
+      variants: undefined,
+      assemblyProgress: undefined,
+    }).cells;
+  let generationBase: PatternSnapshot | undefined,
+    variants: PatternVariants | undefined;
+  if (v.generationBase) {
+    const b = v.generationBase;
+    if (
+      !dimension(b.width) ||
+      !dimension(b.height) ||
+      !Array.isArray(b.patternRle)
+    )
+      throw Error("生成基准数据损坏，未导入");
+    const restored = deserialize({
+      ...v,
+      width: b.width,
+      height: b.height,
+      patternRle: b.patternRle,
+      settings: b.settings,
+      generationBase: undefined,
+      colorRules: undefined,
+      variants: undefined,
+    });
+    generationBase = {
+      width: b.width,
+      height: b.height,
+      cells: restored.cells,
+      settings: restored.settings,
+      createdAt: Number.isSafeInteger(b.createdAt) ? b.createdAt : 0,
+    };
+  }
+  if (v.variants) {
+    if (
+      !["normal", "handmade"].includes(v.variants.active) ||
+      !Array.isArray(v.variants.normal) ||
+      !Array.isArray(v.variants.handmade)
+    )
+      throw Error("候选图版本数据损坏");
+    variants = {
+      active: v.variants.active,
+      normal: decodeSnapshot(v.variants.normal, v.width, v.height),
+      handmade: decodeSnapshot(v.variants.handmade, v.width, v.height),
+    };
+  }
   const def = defaults(v.width, v.height);
   const settings = { ...def, ...v.settings, width: v.width, height: v.height };
   // Numeric sizes in old files were generic UI choices, not catalog evidence.
@@ -273,6 +361,8 @@ export function deserialize(raw: unknown): Project {
           .filter((n) => Number.isInteger(n) && n >= 0 && n < 221)
           .map((n) => indexMap[n])
       : [];
+  if (settings.removeBackground !== undefined)
+    settings.removeBackground = settings.removeBackground === true;
   const crop = settings.crop;
   if (
     !crop ||
@@ -335,6 +425,8 @@ export function deserialize(raw: unknown): Project {
   )
     reference = {
       ...v.reference,
+      rawUrl: dataImage(v.reference.rawUrl),
+      backgroundRemoved: !!v.reference.backgroundRemoved,
       x: Math.max(-2000, Math.min(2000, v.reference.x)),
       y: Math.max(-2000, Math.min(2000, v.reference.y)),
       opacity: Math.max(0, Math.min(1, v.reference.opacity)),
@@ -365,6 +457,37 @@ export function deserialize(raw: unknown): Project {
         : "#29a88f",
     },
     reference,
+    colorRules: Array.isArray(v.colorRules)
+      ? v.colorRules.slice(0, 8).map((rule) => {
+          if (
+            !Array.isArray(rule.indices) ||
+            rule.indices.length > 1e6 ||
+            rule.indices.some(
+              (i) => !Number.isInteger(i) || i < 0 || i >= cells.length,
+            ) ||
+            !Array.isArray(rule.colors) ||
+            rule.colors.some((i) => !Number.isInteger(i) || i < 0 || i >= 221)
+          )
+            throw Error("区域禁色规则无效");
+          return {
+            indices: [...new Set(rule.indices)],
+            colors: [...new Set(rule.colors.map((i) => indexMap[i]))],
+          };
+        })
+      : undefined,
+    generationBase,
+    variants,
+    assemblyProgress: Array.isArray(v.assemblyProgress)
+      ? [
+          ...new Set(
+            v.assemblyProgress
+              .filter(
+                (n) => Number.isInteger(n) && n >= 0 && n < PALETTE.length,
+              )
+              .map((n) => indexMap[n]),
+          ),
+        ]
+      : [],
     // Unknown dates sort last and remain stable across reads.
     updatedAt:
       Number.isSafeInteger(v.updatedAt) &&
@@ -398,6 +521,34 @@ export function transform(
     width: w,
     height: h,
     cells,
+    variants: p.variants
+      ? {
+          active: p.variants.active,
+          normal: transform(
+            { ...p, cells: p.variants.normal, variants: undefined },
+            kind,
+          ).cells,
+          handmade: transform(
+            { ...p, cells: p.variants.handmade, variants: undefined },
+            kind,
+          ).cells,
+        }
+      : undefined,
+    colorRules: p.colorRules?.map((rule) => ({
+      ...rule,
+      indices: rule.indices.map((i) => {
+        const x = i % p.width,
+          y = Math.floor(i / p.width),
+          nx =
+            kind === "rotate"
+              ? p.height - 1 - y
+              : kind === "flipX"
+                ? p.width - 1 - x
+                : x,
+          ny = kind === "rotate" ? x : kind === "flipY" ? p.height - 1 - y : y;
+        return ny * w + nx;
+      }),
+    })),
     settings: { ...p.settings, width: w, height: h },
     reference: undefined,
   };
@@ -432,7 +583,7 @@ export function connected(
 export function cropProject(
   p: Project,
   rect: { x: number; y: number; w: number; h: number },
-) {
+): Project {
   if (rect.w < 16 || rect.h < 16) throw Error("裁剪后的宽高至少为16格");
   const cells = new Int16Array(rect.w * rect.h);
   for (let y = 0; y < rect.h; y++)
@@ -448,6 +599,29 @@ export function cropProject(
     width: rect.w,
     height: rect.h,
     cells,
+    variants: p.variants
+      ? {
+          active: p.variants.active,
+          normal: cropProject(
+            { ...p, cells: p.variants.normal, variants: undefined },
+            rect,
+          ).cells,
+          handmade: cropProject(
+            { ...p, cells: p.variants.handmade, variants: undefined },
+            rect,
+          ).cells,
+        }
+      : undefined,
+    colorRules: p.colorRules?.map((rule) => ({
+      ...rule,
+      indices: rule.indices.flatMap((i) => {
+        const x = (i % p.width) - rect.x,
+          y = Math.floor(i / p.width) - rect.y;
+        return x >= 0 && x < rect.w && y >= 0 && y < rect.h
+          ? [y * rect.w + x]
+          : [];
+      }),
+    })),
     settings: { ...p.settings, width: rect.w, height: rect.h },
     reference: undefined,
   };
@@ -490,4 +664,42 @@ export function remapDisabled(p: Project) {
         allowed,
       );
   return { ...p, cells };
+}
+
+export function captureGeneration(p: Project): PatternSnapshot {
+  return {
+    width: p.width,
+    height: p.height,
+    cells: p.cells.slice(),
+    settings: structuredClone(p.settings),
+    createdAt: Date.now(),
+  };
+}
+export function samePattern(a: ArrayLike<number>, b: ArrayLike<number>) {
+  return a.length === b.length && Array.from(a).every((v, i) => v === b[i]);
+}
+export function hasManualEdits(p: Project) {
+  const b = p.generationBase;
+  return (
+    !!b &&
+    (b.width !== p.width ||
+      b.height !== p.height ||
+      !samePattern(b.cells, p.cells))
+  );
+}
+export function restoreGeneration(p: Project): Project {
+  const b = p.generationBase;
+  if (!b) throw Error("旧作品没有生成基准，可重新生成或将当前图纸设为基准");
+  return {
+    ...p,
+    width: b.width,
+    height: b.height,
+    cells: b.cells.slice(),
+    settings: structuredClone(b.settings),
+    view: "beads",
+    variants: undefined,
+    colorRules: undefined,
+    reference: undefined,
+    assemblyProgress: [],
+  };
 }

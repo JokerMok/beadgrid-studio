@@ -1,8 +1,9 @@
 import { deserialize, serialize, type Project } from "./model";
 import { validCloudSync } from "./cloud-sync";
+import {DATABASE_NAME} from "./cache-reset";
 const open = () =>
   new Promise<IDBDatabase>((resolve, reject) => {
-    const r = indexedDB.open("xing-local-v1", 1);
+    const r = indexedDB.open(DATABASE_NAME, 1);
     r.onupgradeneeded = () => {
       r.result.createObjectStore("projects", { keyPath: "id" });
       r.result.createObjectStore("meta");
@@ -50,22 +51,63 @@ function restoreLocal(raw: unknown): Project {
     ),
   };
 }
-export const saveDraft = (p: Project) =>
-  transaction("meta", "readwrite", (s) => s.put(localSnapshot(p), "draft"));
-export const loadDraft = async () => {
+export const localScope = (userId?: number | null) =>
+  `${window.location.origin}/api:${userId ? "user:" + userId : "guest"}`;
+export const saveDraft = (p: Project, scope = localScope()) =>
+  transaction("meta", "readwrite", (s) =>
+    s.put(localSnapshot(p), "draft:" + scope),
+  );
+const legacyScope = (raw: any) => {
+  const sync = validCloudSync(raw?.cloudSync, raw?.id);
+  if (sync) return `${sync.source}:user:${sync.userId}`;
+  return raw?.cloudSync ? "unassigned" : localScope();
+};
+export const loadDraft = async (scope = localScope()) => {
+  let raw = await transaction("meta", "readonly", (s) =>
+    s.get("draft:" + scope),
+  );
+  if (!raw) {
+    const legacy = await transaction("meta", "readonly", (s) => s.get("draft"));
+    if (legacy && legacyScope(legacy) === scope) raw = legacy;
+  }
+  return raw ? restoreLocal(raw) : null;
+};
+export const loadLegacyDraft = async () => {
   const raw = await transaction("meta", "readonly", (s) => s.get("draft"));
   return raw ? restoreLocal(raw) : null;
 };
-export const saveLocal = (p: Project) =>
-  transaction("projects", "readwrite", (s) => s.put(localSnapshot(p)));
-export const listLocal = async () => {
+export const listUnassigned = async () => {
   const all = await transaction("projects", "readonly", (s) => s.getAll());
   return all
-    .map((p) => restoreLocal(p))
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+    .filter((raw) => !raw.owner && legacyScope(raw) !== localScope())
+    .map((raw) => restoreLocal(raw));
 };
-export const removeLocal = (id: string) =>
-  transaction("projects", "readwrite", (s) => s.delete(id));
+export const saveLocal = (p: Project, scope = localScope()) =>
+  transaction("projects", "readwrite", (s) =>
+    s.put({
+      ...localSnapshot(p),
+      projectId: p.id,
+      id: scope + "|" + p.id,
+      owner: scope,
+    }),
+  );
+export const listLocal = async (scope = localScope()) => {
+  const all = await transaction("projects", "readonly", (s) => s.getAll()),
+    byId = new Map<string, Project>();
+  for (const raw of all
+    .filter((p) => p.owner === scope || (!p.owner && legacyScope(p) === scope))
+    .sort((a, b) => Number(!!a.owner) - Number(!!b.owner))) {
+    const p = restoreLocal({ ...raw, id: raw.projectId || raw.id });
+    byId.set(p.id, p);
+  }
+  return [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+};
+export const removeLocal = async (id: string, scope = localScope()) => {
+  await transaction("projects", "readwrite", (s) => s.delete(scope + "|" + id));
+  const raw = await transaction("projects", "readonly", (s) => s.get(id));
+  if (raw && !raw.owner && legacyScope(raw) === scope)
+    await transaction("projects", "readwrite", (s) => s.delete(id));
+};
 export function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob),
     a = document.createElement("a");

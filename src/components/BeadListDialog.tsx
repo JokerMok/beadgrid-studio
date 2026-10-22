@@ -27,6 +27,9 @@ export default function BeadListDialog({
     [reserve, setReserve] = useState(0),
     [message, setMessage] = useState(""),
     [fallback, setFallback] = useState(false),
+    [artifact, setArtifact] = useState<{ url: string; name: string } | null>(
+      null,
+    ),
     [progress, setProgress] = useState<number | null>(null);
   const job = useRef<AbortController | null>(null);
   const list = useMemo(
@@ -36,9 +39,20 @@ export default function BeadListDialog({
   const text = useMemo(() => listText(list), [list]);
   const exportable = !!list.sizeMm && !!list.total;
   useEffect(() => () => job.current?.abort(), []);
+  useEffect(
+    () => () => {
+      if (artifact) URL.revokeObjectURL(artifact.url);
+    },
+    [artifact],
+  );
+  function offerFile(blob: Blob, name: string) {
+    setArtifact({ url: URL.createObjectURL(blob), name });
+    download(blob, name);
+  }
   useEffect(() => {
     setMessage("");
     setFallback(false);
+    setArtifact(null);
   }, [list]);
   async function copy() {
     try {
@@ -61,12 +75,12 @@ export default function BeadListDialog({
         setProgress,
       );
       if (controller.signal.aborted) return;
-      download(
+      offerFile(
         result.blob,
         `${safeName(list.name)}_用豆清单${reserve ? `_备用${reserve}%` : ""}.${result.extension}`,
       );
       setMessage(
-        `已生成${listPages(list).length}页清单图片${result.extension === "zip" ? "，打包为ZIP下载" : ""}`,
+        `已生成${listPages(list).length}页清单图片${result.extension === "zip" ? "，已打包ZIP" : ""}并提交下载；请检查浏览器下载列表，可使用下方备用入口`,
       );
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "清单图片生成失败，请重试");
@@ -151,11 +165,13 @@ export default function BeadListDialog({
           <button
             disabled={!exportable || progress !== null}
             onClick={() => {
-              download(
+              offerFile(
                 new Blob([listCsv(list)], { type: "text/csv;charset=utf-8" }),
                 `${safeName(list.name)}_用豆清单.csv`,
               );
-              setMessage("已下载CSV，可用中文Excel打开");
+              setMessage(
+                "已提交CSV下载，请检查浏览器下载列表；可用中文Excel打开",
+              );
             }}
           >
             <DownloadSimple />
@@ -170,6 +186,17 @@ export default function BeadListDialog({
             下载清单图片
           </button>
         </div>
+        {artifact && (
+          <p className="hint">
+            <a href={artifact.url} download={artifact.name}>
+              再次下载当前清单
+            </a>{" "}
+            ·{" "}
+            <a href={artifact.url} target="_blank" rel="noreferrer">
+              打开文件备用保存
+            </a>
+          </p>
+        )}
         <p className="micro">
           图片每页最多40色，共{listPages(list).length}
           页；多页打包为ZIP，内含逐页PNG及清单数据。屏幕颜色仅供参考。

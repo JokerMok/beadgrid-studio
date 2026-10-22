@@ -100,7 +100,7 @@ try {
           const r = indexedDB.open("xing-local-v1", 1);
           r.onsuccess = () => {
             const db = r.result,
-              q = db.transaction("meta").objectStore("meta").get("draft");
+              q = db.transaction("meta").objectStore("meta").get("draft:"+window.location.origin+"/api:guest");
             q.onsuccess = () => {
               resolve(q.result);
               db.close();
@@ -221,7 +221,7 @@ try {
           const request = indexedDB.open("xing-local-v1", 1);
           request.onsuccess = () => {
             const db = request.result,
-              query = db.transaction("meta").objectStore("meta").get("draft");
+              query = db.transaction("meta").objectStore("meta").get("draft:"+window.location.origin+"/api:guest");
             query.onsuccess = () => {
               const raw = query.result;
               db.close();

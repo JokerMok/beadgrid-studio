@@ -1,8 +1,8 @@
 #!/bin/bash
 # Invoked by deploy.sh, only on tencent-main. Does not fetch source or alter data.
 set -euo pipefail
-[[ $# == 4 ]] || exit 2
-release=$1; sha=$2; version=$3; reviewed=$4
+[[ $# == 5 ]] || exit 2
+release=$1; sha=$2; version=$3; reviewed=$4; reset_accounts=$5
 [[ "$release" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$ && "$sha" =~ ^[a-f0-9]{40}$ && "$version" =~ ^[0-9A-Za-z.+-]+$ ]] || exit 2
 app=/srv/apps/beadgrid-studio
 incoming="$app/incoming/$release"
@@ -42,11 +42,20 @@ if sudo test -f "$app/shared/data/studio.sqlite"; then
   sudo bash "$target/ops/backup.sh" "$snapshot/business"
 fi
 activated=0
+reset_done=0
+printf '%s\n' "$old" | sudo tee "$snapshot/old-release" >/dev/null
 rollback() {
   code=$?
   trap - ERR
   if (( activated )); then
     if [[ -n "$old" && -d "$old" ]]; then
+      sudo systemctl stop beadgrid-studio
+      if sudo test -d "$snapshot/legacy-data"; then
+        if sudo test -d "$app/shared/data"; then sudo mv "$app/shared/data" "$snapshot/failed-accounts-data"; fi
+        sudo cp -a "$snapshot/legacy-data" "$app/shared/data"
+        if sudo test -d "$snapshot/legacy-uploads"; then if sudo test -d "$app/shared/uploads"; then sudo mv "$app/shared/uploads" "$snapshot/failed-accounts-uploads"; fi; sudo cp -a "$snapshot/legacy-uploads" "$app/shared/uploads"; fi
+      fi
+      sudo install -m 0600 "$snapshot/app.env" "$app/shared/config/app.env"
       ln -s "$old" "$app/.rollback-current"; mv -Tf "$app/.rollback-current" "$app/current"
       if sudo test -f "$snapshot/service"; then sudo install -m 0644 "$snapshot/service" /etc/systemd/system/beadgrid-studio.service; fi
       sudo systemctl daemon-reload
@@ -67,6 +76,18 @@ rollback() {
   exit "$code"
 }
 trap rollback ERR
+if [[ "$reset_accounts" == 1 ]]; then
+  sudo test -s "$app/shared/config/accounts-next.env"
+  # Only these exact beadgrid business directories are reset, after a consistent backup.
+  activated=1
+  sudo systemctl stop beadgrid-studio
+  sudo mv "$app/shared/data" "$snapshot/legacy-data"
+  reset_done=1
+  sudo mv "$app/shared/uploads" "$snapshot/legacy-uploads"
+  sudo install -d -o beadgrid -g beadgrid -m 0700 "$app/shared/data" "$app/shared/uploads"
+  sudo install -o root -g root -m 0600 "$app/shared/config/accounts-next.env" "$app/shared/config/app.env"
+  sudo install -m 0700 "$target/ops/rollback-accounts.sh" "$app/deploy/rollback-accounts.sh"
+fi
 sudo install -m 0644 "$target/ops/beadgrid-studio.service" /etc/systemd/system/beadgrid-studio.service
 sudo systemctl daemon-reload
 ln -s "$target" "$app/.next-current"; mv -Tf "$app/.next-current" "$app/current"

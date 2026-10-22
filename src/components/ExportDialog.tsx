@@ -1,3 +1,6 @@
+import { useEffect, useState } from "react";
+import { api } from "../api";
+import { accountLabel, type AccountUser } from "../account";
 import { DownloadSimple, WarningCircle } from "@phosphor-icons/react";
 import Dialog from "./Dialog";
 import { usage, type Project } from "../model";
@@ -5,17 +8,48 @@ import { chartLayout, legendLayout, physicalPlan } from "../export-layout";
 import type { ExportOptions } from "../export.worker";
 export default function ExportDialog({
   project: p,
+  user: initialUser,
+  blankTemplate,
   options: o,
   onChange,
   onClose,
   onExport,
 }: {
   project: Project;
+  user: AccountUser | null;
+  blankTemplate?: boolean;
   options: ExportOptions;
   onChange: (o: ExportOptions) => void;
   onClose: () => void;
   onExport: () => void;
 }) {
+  const [user, setUser] = useState(initialUser),
+    [checking, setChecking] = useState(!!initialUser),
+    [accountError, setAccountError] = useState(""),
+    [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!initialUser) return;
+    let live = true;
+    setChecking(true);
+    api("/account")
+      .then((r) => {
+        if (live) {
+          if (r.user.id !== initialUser.id)
+            throw Error("登录身份已变化，请重新打开确认窗口");
+          setUser(r.user);
+          setAccountError("");
+        }
+      })
+      .catch((e) => {
+        if (live) setAccountError(e.message);
+      })
+      .finally(() => {
+        if (live) setChecking(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [initialUser?.id, retry]);
   const used = usage(p.cells),
     total = used.reduce((n, c) => n + c[1], 0),
     physical = physicalPlan(p.width, p.height, o.board),
@@ -230,10 +264,26 @@ export default function ExportDialog({
           ))}
         </div>
       </details>
+      {checking && <p role="status">正在读取服务端最新权益…</p>}
+      {accountError && (
+        <p className="error">
+          {accountError}{" "}
+          <button onClick={() => setRetry((n) => n + 1)}>重新读取权益</button>
+        </p>
+      )}
       <div className="export-local-hint">
         <WarningCircle size={18} />
         <span>
-          本地完整能力开放，确认后生成最终文件。完整图纸始终输出单张PNG，不会自动改成分区。
+          {blankTemplate
+            ? "空白模板：可明确导出零颗的空白格纸。"
+            : !total
+              ? "当前图纸为空，默认禁止导出；请先绘制或使用作品菜单中的空白模板。"
+              : !user
+                ? "游客可在本地编辑和备份。高清图纸下载需要登录。"
+                : user.exportAccess
+                  ? `${accountLabel(user)}：中心已允许免次导出，不消耗次数。`
+                  : `${accountLabel(user)}：确认后预留1次免费导出，当前剩余 ${user.freeCredits} 次。`}
+          确认前取消或失败释放预占；结果未知会查询原任务。预占5分钟到期，已完成文件重下不重复扣次。完整图纸仍为单张PNG，不会静默改为分区。
         </span>
       </div>
       {width * height > 64e6 && (
@@ -247,8 +297,11 @@ export default function ExportDialog({
         <button
           className="primary"
           disabled={
-            (o.kind === "sections" || o.assemblyMode === "parts") &&
-            o.regions?.length === 0
+            checking ||
+            !!accountError ||
+            (!total && !blankTemplate) ||
+            ((o.kind === "sections" || o.assemblyMode === "parts") &&
+              o.regions?.length === 0)
           }
           onClick={onExport}
         >

@@ -6,7 +6,8 @@ http://127.0.0.1:18081 {
 		X-Frame-Options DENY
 		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 	}
-	@api path /api /api/*
+	log_skip /auth/*
+	@api path /api /api/* /auth /auth/* /admin
 	handle @api {
 		reverse_proxy 127.0.0.1:18871 {
 			header_up X-Forwarded-For {remote_host}
@@ -40,7 +41,8 @@ pindou.shizibandu.icu {
 		X-Frame-Options DENY
 		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 	}
-	@api path /api /api/*
+	log_skip /auth/*
+	@api path /api /api/* /auth /auth/* /admin
 	handle @api {
 		reverse_proxy 127.0.0.1:18871 {
 			header_up X-Forwarded-For {remote_host}

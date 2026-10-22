@@ -1,9 +1,22 @@
+import { backgroundImageUrl } from "./background-image";
+import AdjustmentDialog from "./components/AdjustmentDialog";
+import DisabledColorsDialog from "./components/DisabledColorsDialog";
+import { applyColorRules } from "./color-rules";
+import AccountDialog from "./components/AccountDialog";
+import HandmadeDialog from "./components/HandmadeDialog";
+import ImportPreview from "./components/ImportPreview";
+import ImportGridControls from "./components/ImportGridControls";
+import { accountLabel, type AccountUser } from "./account";
+import { captureGeneration, restoreGeneration, hasManualEdits } from "./model";
+import { localScope, loadLegacyDraft, listUnassigned } from "./storage";
+import { gridFromLongEdge, gridFromAxis } from "./import-grid";
+import { IRON_STYLES, type IronStyle } from "./ironing";
 import OutlineDialog from "./components/OutlineDialog";
 import ColorPickerDialog from "./components/ColorPickerDialog";
 import ExportDialog from "./components/ExportDialog";
 import BeadListDialog from "./components/BeadListDialog";
 import MaterialSettings from "./components/MaterialSettings";
-import { prepareRaster } from "./prepare-image";
+import { prepareRaster, prepareReferenceRaster } from "./prepare-image";
 import { matchesConversion, type ConversionResult } from "./image-conversion";
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
@@ -70,11 +83,11 @@ import {
   type Tool,
 } from "./model";
 import {
-  saveDraft,
-  loadDraft,
-  saveLocal,
-  listLocal,
-  removeLocal,
+  saveDraft as writeDraft,
+  loadDraft as readDraft,
+  saveLocal as writeLocal,
+  listLocal as readLocal,
+  removeLocal as deleteLocal,
   downloadProject,
   download,
   readImage,
@@ -102,6 +115,8 @@ const tools: { id: Tool; name: string; key: string; icon: typeof Hand }[] = [
   { id: "magic", name: "魔法选取", key: "M", icon: MagicWand },
 ];
 type Modal =
+  | "handmade"
+  | "mosaic"
   | "bead-list"
   | "similar"
   | "outline"
@@ -120,21 +135,6 @@ type Modal =
   | "help"
   | null;
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
-function projectImage(p: Project) {
-  const canvas = document.createElement("canvas");
-  canvas.width = p.width;
-  canvas.height = p.height;
-  const g = canvas.getContext("2d")!;
-  for (let y = 0; y < p.height; y++)
-    for (let x = 0; x < p.width; x++) {
-      const i = p.cells[y * p.width + x];
-      if (i >= 0) {
-        g.fillStyle = PALETTE[i].hex;
-        g.fillRect(x, y, 1, 1);
-      }
-    }
-  return canvas.toDataURL("image/png");
-}
 export default function App() {
   const [project, setProject] = useState<Project>(makeDemo),
     [booted, setBooted] = useState(false),
@@ -154,7 +154,14 @@ export default function App() {
       name: string;
       initial?: Settings;
       intent: "new" | "regenerate";
+      resultMode?: "mosaic";
     } | null>(null),
+    [mainGridLocked, setMainGridLocked] = useState(true),
+    [mainSizing, setMainSizing] = useState<"source" | "custom">("source"),
+    [sourceRatio, setSourceRatio] = useState(1),
+    [accountNotice, setAccountNotice] = useState(""),
+    [exportStatus, setExportStatus] = useState(""),
+    [blankTemplate, setBlankTemplate] = useState(false),
     [toast, setToast] = useState(""),
     [busy, setBusy] = useState<{ progress: number; message: string } | null>(
       null,
@@ -168,18 +175,15 @@ export default function App() {
     [newW, setNewW] = useState(52),
     [newH, setNewH] = useState(52),
     [localWorks, setLocalWorks] = useState<Project[]>([]),
+    [unassignedWorks, setUnassignedWorks] = useState<Project[]>([]),
     [cloudWorks, setCloudWorks] = useState<
       { id: string; title: string; updated: number }[]
     >([]),
-    [user, setUser] = useState<{ id: number; username: string } | null>(null),
-    [authMode, setAuthMode] = useState("login"),
-    [username, setUsername] = useState(""),
-    [password, setPassword] = useState(""),
+    [user, setUser] = useState<AccountUser | null>(null),
     [formError, setFormError] = useState(""),
     [networkBusy, setNetworkBusy] = useState(false),
     [replaceFrom, setReplaceFrom] = useState(0),
     [replaceTo, setReplaceTo] = useState(1),
-    [adjust, setAdjust] = useState<Settings>(defaults()),
     [exportOptions, setExportOptions] = useState<ExportOptions>({
       kind: "chart",
       cell: 0,
@@ -194,6 +198,7 @@ export default function App() {
     [readyExport, setReadyExport] = useState<{
       blob: Blob;
       name: string;
+      job?: string;
     } | null>(null);
   const current = useRef(project);
   current.current = project;
@@ -210,7 +215,88 @@ export default function App() {
     cloudVersions = useRef(new Map<string, CloudSync>());
   const serviceSource = window.location.origin + "/api";
   const activeUser = useRef(user);
-  activeUser.current = user;
+  const scopeRef = useRef(localScope()),
+    switchRevision = useRef(0),
+    exportJob = useRef<{ id: string; userId: number } | null>(null),
+    exportCancelled = useRef(false),
+    processingAbort = useRef<AbortController | null>(null),
+    identityQueue = useRef<Promise<void>>(Promise.resolve());
+  const saveDraft = (p: Project) => writeDraft(p, scopeRef.current),
+    saveLocal = (p: Project) => writeLocal(p, scopeRef.current),
+    listLocal = () => readLocal(scopeRef.current),
+    removeLocal = (id: string) => deleteLocal(id, scopeRef.current);
+  function switchAccount(
+    next: AccountUser | null,
+    broadcast = true,
+  ): Promise<void> {
+    const job = identityQueue.current
+      .catch(() => {})
+      .then(() => switchAccountNow(next, broadcast));
+    identityQueue.current = job;
+    return job;
+  }
+  async function switchAccountNow(next: AccountUser | null, broadcast = true) {
+    if (next?.id !== activeUser.current?.id) next = (await api("/me")).user;
+
+    if (
+      scopeRef.current === localScope(next?.id) &&
+      activeUser.current?.id === next?.id
+    ) {
+      activeUser.current = next;
+      setUser(next);
+      return;
+    }
+    const revision = ++switchRevision.current;
+    setBooted(false);
+    try {
+      await writeDraft(withSync(current.current), scopeRef.current);
+    } catch (e) {
+      setBooted(true);
+      throw Error("原账号草稿备份失败，未切换编辑区：" + errText(e));
+    }
+    processingAbort.current?.abort();
+    processingAbort.current = null;
+    const pendingExport = !!exportJob.current;
+    exportJob.current = null;
+    exportCancelled.current = true;
+    scopeRef.current = localScope(next?.id);
+    activeUser.current = next;
+    setUser(next);
+    cloudVersions.current.clear();
+    undo.current = [];
+    redo.current = [];
+    setSelection(new Set());
+    setIncoming(null);
+    setReadyExport(null);
+    setCloudWorks([]);
+    worker.current?.terminate();
+    jobId.current++;
+    setBusy(null);
+    let restored: Project | null = null;
+    try {
+      restored = await readDraft(scopeRef.current);
+    } catch (e) {
+      notify("当前身份草稿读取失败，未加载其他身份内容：" + errText(e));
+    }
+    if (revision !== switchRevision.current) return;
+    const p = restored || makeDemo();
+    rememberSync(p);
+    current.current = p;
+    setProject(p);
+    setUser(next);
+    setBooted(true);
+    setAccountNotice(
+      next
+        ? `当前本地草稿归属：${next.username}。游客及其他账号的草稿单独保留；不会自动上传。`
+        : "当前为游客草稿。已退出账号的草稿和账号作品不会在此显示。",
+    );
+    if (pendingExport)
+      notify(
+        "前个账号的未完成导出可回账号中心取消；未完成预占5分钟到期释放；已提交的任务由后台核实恢复",
+      );
+    if (broadcast)
+      localStorage.setItem("beadgrid-auth-change", crypto.randomUUID());
+  }
   function rememberSync(p: Project) {
     const sync = validCloudSync(p.cloudSync, p.id);
     if (sync && sync.source === serviceSource) {
@@ -228,10 +314,6 @@ export default function App() {
           )
         : p.cloudSync,
     };
-  }
-  function clearActiveSync() {
-    cloudVersions.current.clear();
-    setProject((p) => ({ ...p, cloudSync: undefined }));
   }
   const counts = useMemo(() => usage(project.cells), [project.cells]),
     total = counts.reduce((s, v) => s + v[1], 0),
@@ -257,9 +339,19 @@ export default function App() {
     setHistoryTick((t) => t + 1);
   }
   function change(p: Project) {
-    setProject(withSync({ ...p, updatedAt: Date.now() }));
+    const next = {
+      ...p,
+      variants: p.variants
+        ? { ...p.variants, [p.variants.active]: p.cells.slice() }
+        : undefined,
+      updatedAt: Date.now(),
+    };
+    setProject(withSync(next));
   }
   function commit(p: Project, keepSelection = false) {
+    if (p.settings.disabled.length || p.settings.allowed.length)
+      p = remapDisabled(p);
+    p = applyColorRules(p);
     checkpoint();
     change(p);
     if (!keepSelection) {
@@ -296,27 +388,87 @@ export default function App() {
     }
   }
   useEffect(() => {
-    loadDraft()
-      .then((p) => {
-        if (p) {
-          rememberSync(p);
-          setProject(p);
-          notify("已恢复上次的本地草稿");
+    let alive = true;
+    (async () => {
+      try {
+        let account: AccountUser | null = null;
+        try {
+          account = (await api("/me")).user;
+        } catch (e) {
+          notify(
+            "公共账号暂不可用，本地编辑仍可使用；账号草稿保留且未加载：" +
+              errText(e),
+          );
         }
-      })
-      .catch((e) => notify("草稿恢复失败：" + errText(e)))
-      .finally(() => setBooted(true));
-    api("/me")
-      .then((r) => setUser(r.user))
-      .catch(() => {});
-    return () => worker.current?.terminate();
+        if (!alive) return;
+        activeUser.current = account;
+        scopeRef.current = localScope(account?.id);
+        setUser(account);
+        try {
+          const p = await readDraft(scopeRef.current);
+          if (alive && p) {
+            rememberSync(p);
+            setProject(p);
+            notify("已恢复当前身份的本地草稿");
+          }
+        } catch (e) {
+          notify("当前身份草稿读取失败，未加载其他身份内容：" + errText(e));
+        }
+      } finally {
+        if (alive) {
+          setBooted(true);
+          const params = new URLSearchParams(location.search);
+          if (params.has("authError") || location.pathname === "/admin")
+            setModal("auth");
+        }
+      }
+    })();
+    return () => {
+      alive = false;
+      worker.current?.terminate();
+      processingAbort.current?.abort();
+    };
   }, []);
   useEffect(() => {
     if (!booted) return;
+    let active = true;
+    const check = async () => {
+      try {
+        const r = await api("/me");
+        if (!active) return;
+        if (r.user?.id !== activeUser.current?.id) {
+          await switchAccount(r.user, false);
+          setModal(null);
+          notify("登录身份已在其他窗口改变，已切换至独立草稿");
+        } else {
+          activeUser.current = r.user;
+          setUser(r.user);
+        }
+      } catch {}
+    };
+    const storage = (e: StorageEvent) => {
+      if (e.key === "beadgrid-auth-change") check();
+    };
+    window.addEventListener("focus", check);
+    window.addEventListener("beadgrid-session-invalid", check);
+    window.addEventListener("storage", storage);
+    const timer = setInterval(check, 60000);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", check);
+      window.removeEventListener("beadgrid-session-invalid", check);
+      window.removeEventListener("storage", storage);
+      clearInterval(timer);
+    };
+  }, [booted]);
+  useEffect(() => {
+    if (!booted) return;
     const revision = ++draftRevision.current;
+    const identity = scopeRef.current,
+      snapshot = withSync(project);
     setSaved("正在保存");
     const timer = setTimeout(() => {
-      saveDraft(withSync(project))
+      writeDraft(snapshot, identity)
         .then(() => {
           if (revision === draftRevision.current) setSaved("已自动保存");
         })
@@ -328,9 +480,36 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [project, booted, user]);
   useEffect(() => {
+    let alive = true;
+    if (project.source) {
+      const im = new Image();
+      im.onload = () => {
+        if (alive) {
+          const c =
+            project.settings.fit === "crop"
+              ? project.settings.crop
+              : { w: 1, h: 1 };
+          setSourceRatio((im.naturalWidth * c.w) / (im.naturalHeight * c.h));
+        }
+      };
+      im.src = project.source;
+    } else setSourceRatio(project.width / project.height);
+    return () => {
+      alive = false;
+    };
+  }, [
+    project.source,
+    project.width,
+    project.height,
+    project.settings.fit,
+    project.settings.crop,
+  ]);
+  useEffect(() => {
     setBoardW(project.width);
     setBoardH(project.height);
-  }, [project.width, project.height]);
+    setMainSizing(project.settings.gridSizing || "custom");
+    setMainGridLocked(project.settings.gridSizing === "source");
+  }, [project.id, project.width, project.height, project.settings.gridSizing]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (
@@ -415,8 +594,10 @@ export default function App() {
   }, []);
   async function saveNamed() {
     try {
-      const p = withSync({ ...current.current, updatedAt: Date.now() });
-      await saveLocal(p);
+      const identity = scopeRef.current,
+        p = withSync({ ...current.current, updatedAt: Date.now() });
+      await writeLocal(p, identity);
+      if (scopeRef.current !== identity) return;
       setProject(p);
       notify("已保存到本地作品");
     } catch (e) {
@@ -425,8 +606,13 @@ export default function App() {
   }
   async function receiveFile(file?: File) {
     if (!file) return;
+    const identity = scopeRef.current;
     try {
       const source = await readImage(file);
+      if (identity !== scopeRef.current) {
+        notify("身份已变化，已取消上传临时素材");
+        return;
+      }
       setIncoming({
         sessionId: crypto.randomUUID(),
         source,
@@ -457,15 +643,39 @@ export default function App() {
     if (preview && !matchesConversion(preview, source, s))
       throw Error("预览与当前参数不一致，请等待最新预览");
     signal?.throwIfAborted();
-    const base = current.current;
+    const base = current.current,
+      identity = scopeRef.current;
+    if (
+      intent === "regenerate" &&
+      hasManualEdits(base) &&
+      !window.confirm(
+        "重新生成将覆盖手工编辑。旧作品会先保存备份，也可撤销；确认生成后将建立新的恢复基准。继续吗？",
+      )
+    ) {
+      if (preview) throw new DOMException("已取消重新生成", "AbortError");
+      return;
+    }
     try {
       await saveLocal(withSync(base));
+      if (intent === "regenerate" && hasManualEdits(base))
+        await saveLocal({
+          ...base,
+          id: crypto.randomUUID(),
+          name: (base.name + " · 重生成前备份").slice(0, 120),
+          cloudSync: undefined,
+          updatedAt: Date.now(),
+        });
     } catch (e) {
       if (preview) throw Error("无法备份当前作品：" + errText(e));
       notify("无法备份当前作品：" + errText(e));
       return;
     }
     signal?.throwIfAborted();
+    if (scopeRef.current !== identity) {
+      if (preview)
+        throw new DOMException("身份已变化，已取消生成", "AbortError");
+      return;
+    }
     if (preview) {
       commit({
         ...base,
@@ -476,6 +686,16 @@ export default function App() {
         width: s.width,
         height: s.height,
         cells: preview.cells,
+        generationBase: {
+          width: s.width,
+          height: s.height,
+          cells: preview.cells.slice(),
+          settings: structuredClone(s),
+          createdAt: Date.now(),
+        },
+        variants: undefined,
+        colorRules: undefined,
+        assemblyProgress: [],
         settings: structuredClone(s),
         name:
           intent === "regenerate"
@@ -494,10 +714,19 @@ export default function App() {
     setBusy({ progress: 0, message: "正在解码与构图…" });
     let raster;
     try {
-      raster = await prepareRaster(source, s);
+      const controller = new AbortController();
+      processingAbort.current = controller;
+      try {
+        raster = await prepareRaster(source, s, controller.signal);
+      } finally {
+        if (processingAbort.current === controller)
+          processingAbort.current = null;
+      }
     } catch (e) {
-      setBusy(null);
-      notify(errText(e));
+      if (jobId.current === revision) {
+        setBusy(null);
+        notify(errText(e));
+      }
       return;
     }
     if (jobId.current !== revision) return;
@@ -518,6 +747,16 @@ export default function App() {
           width: s.width,
           height: s.height,
           cells: data.cells,
+          generationBase: {
+            width: s.width,
+            height: s.height,
+            cells: data.cells.slice(),
+            settings: structuredClone(s),
+            createdAt: Date.now(),
+          },
+          variants: undefined,
+          colorRules: undefined,
+          assemblyProgress: [],
           settings: s,
           name:
             intent === "regenerate"
@@ -543,6 +782,7 @@ export default function App() {
     w.onmessage = ({ data }) => {
       if (jobId.current !== id) return;
       if (data.error) {
+        refundExport();
         notify(data.error);
         setBusy(null);
         w.terminate();
@@ -563,6 +803,7 @@ export default function App() {
     w.onerror = (e) => {
       if (jobId.current !== id) return;
       setBusy(null);
+      refundExport();
       notify("处理失败：" + e.message);
       w.terminate();
       worker.current = null;
@@ -570,6 +811,10 @@ export default function App() {
     w.postMessage(payload);
   }
   function cancelJob() {
+    processingAbort.current?.abort();
+    processingAbort.current = null;
+    exportCancelled.current = true;
+    refundExport();
     jobId.current++;
     worker.current?.terminate();
     worker.current = null;
@@ -621,12 +866,27 @@ export default function App() {
     for (const i of selection) cells[i] = value;
     commit({ ...project, cells }, true);
   }
+  async function accountWorks() {
+    const account = activeUser.current;
+    if (!account) return [];
+    const r = await api("/works");
+    if (account.id !== activeUser.current?.id || r.userId !== account.id) {
+      window.dispatchEvent(new Event("beadgrid-session-invalid"));
+      throw Error("登录身份已变化，已取消读取旧身份作品列表");
+    }
+    return r.works;
+  }
   async function openWorks() {
+    const identity = scopeRef.current;
     setModal("works");
     setFormError("");
     try {
-      setLocalWorks(await listLocal());
-      if (user) setCloudWorks((await api("/works")).works);
+      const local = await listLocal(),
+        unassigned = await listUnassigned();
+      if (identity !== scopeRef.current) return;
+      setLocalWorks(local);
+      setUnassignedWorks(unassigned);
+      if (activeUser.current) setCloudWorks(await accountWorks());
     } catch (e) {
       setFormError(errText(e));
     }
@@ -676,7 +936,12 @@ export default function App() {
   }
   async function openProject(p: Project, imported = false) {
     try {
-      await saveLocal(withSync(current.current));
+      const identity = scopeRef.current;
+      await writeLocal(withSync(current.current), identity);
+      if (scopeRef.current !== identity) {
+        notify("身份已变化，已取消打开旧身份作品");
+        return;
+      }
       // Opening a snapshot adopts its own base version, never a newer stamp
       // remembered while editing another snapshot with the same project ID.
       for (const [key, sync] of cloudVersions.current)
@@ -735,6 +1000,7 @@ export default function App() {
           ...project.settings,
           width: boardW,
           height: boardH,
+          gridSizing: mainSizing,
         },
         "regenerate",
       );
@@ -759,34 +1025,285 @@ export default function App() {
     notify("板子尺寸已更新，已有格子按左上角保留");
   }
   function openAdjust(kind: "adjust" | "align") {
-    setAdjust({
-      ...project.settings,
-      brightness: 0,
-      contrast: 0,
-      saturation: 0,
-      sharpen: 0,
-      exposure: 0,
-    });
-    setModal(kind);
-  }
-  function doExport() {
-    setModal(null);
-    const snapshot = { ...project, cells: project.cells.slice() };
-    startJob(
-      new Worker(new URL("./export.worker.ts", import.meta.url), {
-        type: "module",
-      }),
-      "正在准备图纸…",
-      { project: snapshot, options: exportOptions },
-      (data) => {
-        setReadyExport({
-          blob: new Blob([data.bytes], {
-            type: data.extension === "png" ? "image/png" : "application/zip",
-          }),
-          name: `${safeName(snapshot.name)}_${exportOptions.kind}${exportOptions.mirror ? "_镜像" : ""}.${data.extension}`,
-        });
+    if (kind === "adjust") {
+      setModal("adjust");
+      return;
+    }
+    if (project.reference) {
+      setModal("reference");
+      return;
+    }
+    if (!project.source) {
+      notify("请先添加图纸底图，再对齐识别");
+      referenceInput.current?.click();
+      return;
+    }
+    setIncoming({
+      sessionId: crypto.randomUUID(),
+      source: project.source,
+      name: project.sourceName || project.name,
+      intent: "regenerate",
+      initial: {
+        ...project.settings,
+        width: project.width,
+        height: project.height,
+        mode: "recognize",
       },
-    );
+    });
+  }
+  async function refundExport() {
+    const j = exportJob.current;
+    if (!j) return;
+    exportJob.current = null;
+    try {
+      const result = await api("/exports/" + j.id + "/cancel", {
+        method: "POST",
+        body: JSON.stringify({ expectedUserId: j.userId }),
+      });
+      notify(
+        result.status === "ready"
+          ? "此任务文件已完成并结算，可在账号中心再次下载"
+          : `原任务状态：${result.status}（结果未知时请稍后查询）`,
+      );
+    } catch {
+      notify(
+        "暂时无法确认结果，后台将按原业务号恢复；请在账号模块查询，不会把超时当作确定失败",
+      );
+    }
+  }
+  async function doExport() {
+    const identity = scopeRef.current,
+      owner = activeUser.current?.id;
+    const snapshot = { ...project, cells: project.cells.slice() };
+    if (!usage(snapshot.cells).length && !blankTemplate) {
+      notify("图纸为空；需要空白图纸时请选择“导出空白模板”");
+      return;
+    }
+    if (!user) {
+      setModal("auth");
+      notify("请登录后确认导出；本地编辑和项目备份仍可使用");
+      return;
+    }
+    exportCancelled.current = false;
+    setModal(null);
+    setBusy({ progress: 0, message: "正在核对服务端权益…" });
+    try {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify({
+          project: serialize(snapshot),
+          options: exportOptions,
+        }),
+      );
+      const hash = await crypto.subtle.digest("SHA-256", bytes),
+        fingerprint = Array.from(new Uint8Array(hash), (b) =>
+          b.toString(16).padStart(2, "0"),
+        ).join("");
+      const requestKey = crypto.randomUUID();
+      const reserve = () =>
+        api("/exports/reserve", {
+          method: "POST",
+          body: JSON.stringify({
+            expectedUserId: user.id,
+            requestKey,
+            kind: blankTemplate ? "blank" : exportOptions.kind,
+            fingerprint,
+          }),
+        });
+      let j;
+      try {
+        j = await reserve();
+      } catch (error) {
+        if (error instanceof TypeError) j = await reserve();
+        else throw error;
+      }
+      if (identity !== scopeRef.current || owner !== activeUser.current?.id) {
+        notify(
+          "身份已变化，原导出未提交下载；未完成预留到期释放，已提交任务继续核实恢复",
+        );
+        return;
+      }
+      if (j.status === "pending_recovery") {
+        setBusy(null);
+        notify(
+          "权益响应未知，已保存原任务；请在账号模块查询恢复结果，不要重复新建任务",
+        );
+        setModal("auth");
+        return;
+      }
+      exportJob.current = { id: j.id, userId: user.id };
+      if (exportCancelled.current) {
+        await refundExport();
+        return;
+      }
+      startJob(
+        new Worker(new URL("./export.worker.ts", import.meta.url), {
+          type: "module",
+        }),
+        "正在生成图纸…",
+        { project: snapshot, options: exportOptions },
+        (data) => {
+          const blob = new Blob([data.bytes], {
+              type: data.extension === "png" ? "image/png" : "application/zip",
+            }),
+            name = `${safeName(snapshot.name)}_${blankTemplate ? "空白模板" : exportOptions.kind}${exportOptions.mirror ? "_镜像" : ""}.${data.extension}`;
+          setReadyExport({ blob, name, job: j.id });
+          setBlankTemplate(false);
+          setExportStatus(
+            "文件已生成，尚未结算；请提交至受控下载。失败可重试，取消会返还预留次数。",
+          );
+        },
+      );
+    } catch (e) {
+      setBusy(null);
+      await refundExport();
+      notify(errText(e));
+      if (errText(e).includes("次数")) setModal("auth");
+    }
+  }
+  async function submitExport() {
+    if (!readyExport) return;
+    const identity = scopeRef.current,
+      owner = activeUser.current?.id,
+      outgoing = readyExport;
+    setNetworkBusy(true);
+    setExportStatus("正在保存文件并结算…");
+    try {
+      const response = await fetch(
+        "/api/exports/" + readyExport.job + "/file",
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-Studio-User": String(user?.id),
+            "X-Filename": encodeURIComponent(readyExport.name),
+          },
+          body: readyExport.blob,
+        },
+      );
+      const body = await response.json();
+      if (!response.ok || body.status !== "ready")
+        throw Error(body.error || "原任务结果待恢复，请稍后查询或重试同一任务");
+      if (identity !== scopeRef.current || owner !== activeUser.current?.id)
+        return;
+      if (exportJob.current?.id === outgoing.job) exportJob.current = null;
+      const a = document.createElement("a");
+      a.href = "/api/exports/" + readyExport.job + "/download";
+      a.download = readyExport.name;
+      a.click();
+      setExportStatus(
+        "文件已完成并提交下载；请检查浏览器下载列表。若未收到，可重试下载或打开备用文件。",
+      );
+    } catch (e) {
+      setExportStatus(
+        "未确认结算成功：" +
+          errText(e) +
+          "。可重试提交，同一任务不会重复扣次；或取消未完成任务。",
+      );
+    } finally {
+      setNetworkBusy(false);
+    }
+  }
+  async function removeReferenceBackground(enabled: boolean) {
+    const base = current.current,
+      r = base.reference;
+    if (!r) return;
+    const controller = new AbortController(),
+      identity = scopeRef.current;
+    processingAbort.current = controller;
+    setModal(null);
+    setBusy({
+      progress: 0,
+      message: enabled ? "正在清除底图边缘背景…" : "正在恢复底图原始背景…",
+    });
+    try {
+      const rawUrl = r.rawUrl || r.url,
+        url = enabled
+          ? await backgroundImageUrl(rawUrl, controller.signal)
+          : rawUrl;
+      controller.signal.throwIfAborted();
+      if (identity !== scopeRef.current)
+        throw new DOMException("身份已变化", "AbortError");
+      commit({
+        ...base,
+        reference: { ...r, rawUrl, url, backgroundRemoved: enabled },
+      });
+      setModal("reference");
+    } catch (e) {
+      if (!controller.signal.aborted) notify(errText(e));
+    } finally {
+      if (processingAbort.current === controller) {
+        processingAbort.current = null;
+        setBusy(null);
+      }
+    }
+  }
+  async function recognizeReference() {
+    const base = current.current;
+    if (!base.reference) return;
+    if (
+      !window.confirm(
+        "按已对齐底图识别色块并替换当前图纸？将保留原图与旧生成基准，可撤销恢复。",
+      )
+    )
+      return;
+    setModal(null);
+    const revision = jobId.current;
+    setBusy({ progress: 0, message: "正在读取已对齐底图…" });
+    try {
+      const raster = await prepareReferenceRaster(base);
+      if (revision !== jobId.current) return;
+      startJob(
+        new Worker(new URL("./convert.worker.ts", import.meta.url), {
+          type: "module",
+        }),
+        "正在识别底图色号…",
+        { raster, settings: { ...base.settings, mode: "recognize" } },
+        (data) => {
+          commit({
+            ...base,
+            cells: data.cells,
+            variants: undefined,
+            view: "beads",
+          });
+          notify("底图识别已应用，透明区域保持空格；可撤销或恢复生成基准");
+        },
+      );
+    } catch (e) {
+      setBusy(null);
+      notify(errText(e));
+    }
+  }
+  function restoreBaseline() {
+    try {
+      commit(restoreGeneration(project));
+      notify("已恢复本次确认生成的图纸，可撤销");
+    } catch (e) {
+      notify(errText(e));
+      if (
+        window.confirm(
+          "此旧作品没有生成基准。是否把当前图纸明确设为新的恢复基准？这不会补造历史。",
+        )
+      )
+        commit({ ...project, generationBase: captureGeneration(project) });
+    }
+  }
+  function openRegenerate() {
+    if (!project.source) {
+      notify("此作品没有原图，请上传原图后生成");
+      return;
+    }
+    setIncoming({
+      sessionId: crypto.randomUUID(),
+      source: project.source,
+      name: project.sourceName || project.name,
+      intent: "regenerate",
+      initial: {
+        ...project.settings,
+        width: boardW,
+        height: boardH,
+        gridSizing: mainSizing,
+      },
+    });
   }
   const filteredColors = (
     paletteTab === "used"
@@ -855,9 +1372,15 @@ export default function App() {
           const file = e.target.files?.[0];
           e.target.value = "";
           if (!file) return;
+          const identity = scopeRef.current;
           try {
-            if (file.size > 16e6) throw Error("项目文件超过16MB");
-            await openProject(deserialize(JSON.parse(await file.text())), true);
+            if (file.size > 64e6) throw Error("项目文件超过64MB");
+            const raw = JSON.parse(await file.text());
+            if (identity !== scopeRef.current) {
+              notify("身份已变化，已取消项目文件导入");
+              return;
+            }
+            await openProject(deserialize(raw), true);
           } catch (e) {
             notify("项目导入失败：" + errText(e));
           }
@@ -872,18 +1395,37 @@ export default function App() {
         onChange={async (e) => {
           const f = e.target.files?.[0];
           e.target.value = "";
+          const identity = scopeRef.current,
+            projectId = current.current.id;
           if (f)
             try {
               const url = await readImage(f);
+              const image = new Image();
+              image.src = url;
+              await image.decode();
+              if (
+                identity !== scopeRef.current ||
+                projectId !== current.current.id
+              ) {
+                notify("作品或身份已变化，已取消添加旧底图");
+                return;
+              }
+              const base = current.current;
+              const scale = Math.min(
+                project.width / image.naturalWidth,
+                project.height / image.naturalHeight,
+              );
+              const refW = image.naturalWidth * scale,
+                refH = image.naturalHeight * scale;
               commit({
-                ...project,
+                ...base,
                 reference: {
                   url,
                   opacity: 0.35,
-                  x: 0,
-                  y: 0,
-                  width: project.width,
-                  height: project.height,
+                  x: (base.width - refW) / 2,
+                  y: (base.height - refH) / 2,
+                  width: refW,
+                  height: refH,
                 },
               });
               setModal("reference");
@@ -923,6 +1465,24 @@ export default function App() {
                 <span className="menu-label">作品</span>
                 {action("保存", FloppyDisk, saveNamed)}
                 {action("我的作品", FolderOpen, openWorks)}
+                {action("账号中心", UserCircle, () => setModal("auth"))}
+                {action(
+                  "恢复本次生成图纸",
+                  ArrowCounterClockwise,
+                  restoreBaseline,
+                )}
+                {action("按当前参数重新生成", ArrowsClockwise, openRegenerate)}
+                {action("进入拼豆模式", GridFour, () => {
+                  change({ ...project, view: "beads" });
+                  setTool("hand");
+                  setFocus(true);
+                  notify("已进入拼豆模式，可直接编辑格子；再次点专注可退出");
+                })}
+                {action("导出空白模板", FileArrowDown, () => {
+                  setBlankTemplate(true);
+                  setExportOptions({ ...exportOptions, kind: "chart" });
+                  setModal("export");
+                })}
                 {action("自定义创作", Plus, () => setModal("new"))}
                 {action("导入项目文件", FolderOpen, () =>
                   projectInput.current?.click(),
@@ -937,9 +1497,11 @@ export default function App() {
                       sessionId: crypto.randomUUID(),
                       source: project.source,
                       name: project.sourceName || project.name,
+                      initial: project.settings,
                       intent: "regenerate",
+                      resultMode: "mosaic",
                     });
-                  else notify("请先上传一张图片");
+                  else setModal("mosaic");
                 })}
                 <button disabled title="暂未接入AI服务">
                   <MagicWand size={18} />
@@ -954,7 +1516,11 @@ export default function App() {
             role="status"
           >
             <i />
-            {saved}
+            <span>{saved}</span>
+            <small>
+              {" "}
+              · {user ? user.username + " · " + accountLabel(user) : "游客"}
+            </small>
           </span>
         </div>
         <nav className="top-toolbar" aria-label="工作台操作">
@@ -962,14 +1528,17 @@ export default function App() {
           {action(
             "用豆清单",
             FileArrowDown,
-            () => setModal("bead-list"),
+            () => setModal(user ? "bead-list" : "auth"),
             "bead-list-entry",
           )}
           <button
             className="primary export-entry"
             aria-label="下载图纸"
             title="导出图纸"
-            onClick={() => setModal("export")}
+            onClick={() => {
+              setBlankTemplate(false);
+              setModal("export");
+            }}
           >
             <DownloadSimple size={18} />
             <span>导出图纸</span>
@@ -977,13 +1546,28 @@ export default function App() {
           <button
             className="account-button icon-button"
             aria-label={user ? "账号：" + user.username : "登录 / 注册"}
-            title={user ? user.username + " · 我的账号作品" : "登录 / 注册"}
-            onClick={() => (user ? openWorks() : setModal("auth"))}
+            title={
+              user
+                ? user.username + " · 账号中心 · " + accountLabel(user)
+                : "登录 / 注册"
+            }
+            onClick={() => setModal("auth")}
           >
             <UserCircle size={25} />
           </button>
         </nav>
       </header>
+      {accountNotice && (
+        <div className="identity-notice" role="status">
+          {accountNotice}
+          <button
+            aria-label="关闭身份提示"
+            onClick={() => setAccountNotice("")}
+          >
+            ×
+          </button>
+        </div>
+      )}
       <main
         className="workspace"
         onDragOver={(e) => e.preventDefault()}
@@ -1018,7 +1602,7 @@ export default function App() {
                 {
                   name: "自选颜色",
                   icon: GridFour,
-                  run: () => setModal("palette"),
+                  run: () => setModal(user ? "palette" : "auth"),
                 },
                 {
                   name: "添加底图",
@@ -1029,21 +1613,11 @@ export default function App() {
                   name: "识别图片色号",
                   icon: GridFour,
                   run: () => {
-                    project.source
-                      ? setIncoming({
-                          sessionId: crypto.randomUUID(),
-                          source: project.source,
-                          name: project.sourceName || project.name,
-                          intent: "regenerate",
-                          initial: {
-                            ...project.settings,
-                            width: boardW,
-                            height: boardH,
-                            mode: "recognize",
-                          },
-                        })
-                      : fileInput.current?.click();
-                    notify("选择已对齐图纸，并使用中心采样识别模式");
+                    if (project.reference) setModal("reference");
+                    else {
+                      notify("请先添加底图并对齐网格，再识别色号");
+                      referenceInput.current?.click();
+                    }
                   },
                 },
                 {
@@ -1057,15 +1631,7 @@ export default function App() {
                 {
                   name: "识别成手搓图",
                   icon: MagicWand,
-                  run: () => {
-                    setIncoming({
-                      sessionId: crypto.randomUUID(),
-                      source: project.source || projectImage(project),
-                      name: project.sourceName || project.name,
-                      intent: "regenerate",
-                      initial: { ...project.settings, mode: "simple" },
-                    });
-                  },
+                  run: () => setModal(user ? "handmade" : "auth"),
                 },
                 {
                   name: "禁用色号",
@@ -1080,7 +1646,10 @@ export default function App() {
                 {
                   name: "网格对齐",
                   icon: GridFour,
-                  run: () => openAdjust("align"),
+                  run: () =>
+                    project.reference
+                      ? setModal("reference")
+                      : openAdjust("align"),
                 },
                 { name: "更多", icon: DotsThree, run: () => setModal("more") },
               ].map(({ name, icon: Icon, run }) => (
@@ -1174,8 +1743,40 @@ export default function App() {
             </button>
           </div>
           <div className="canvas-shell">
+            {project.view === "iron" && (
+              <div
+                className="iron-picker"
+                role="radiogroup"
+                aria-label="熨烫类型"
+              >
+                {IRON_STYLES.map(([id, label, note]) => (
+                  <button
+                    key={id}
+                    role="radio"
+                    aria-checked={
+                      (project.settings.ironStyle || "regular") === id
+                    }
+                    title={note}
+                    className={
+                      (project.settings.ironStyle || "regular") === id
+                        ? "active"
+                        : ""
+                    }
+                    onClick={() =>
+                      updateSettings({ ironStyle: id as IronStyle })
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+                <small>
+                  仅作成品效果参考；离开后恢复网格与坐标，不改变色卡及导出颜色。
+                </small>
+              </div>
+            )}
             <CanvasEditor
               project={project}
+              guest={!user}
               tool={tool}
               color={color}
               brush={brush}
@@ -1199,6 +1800,11 @@ export default function App() {
                   : undefined
               }
             />
+            {!user && (
+              <div className="guest-preview-notice">
+                游客试用 · 登录后查看完整色号与高清导出
+              </div>
+            )}
           </div>
           {(tool === "brush" || tool === "eraser" || selection.size > 0) && (
             <div className="editing-dock">
@@ -1344,6 +1950,7 @@ export default function App() {
                     commit({
                       ...project,
                       cells: new Int16Array(project.cells.length).fill(-1),
+                      view: "beads",
                     });
                     notify("画面已清除，可撤销恢复");
                   }}
@@ -1434,10 +2041,12 @@ export default function App() {
                   className={project.grid.codes ? "soft" : ""}
                   disabled={project.view === "iron"}
                   onClick={() =>
-                    change({
-                      ...project,
-                      grid: { ...project.grid, codes: !project.grid.codes },
-                    })
+                    user
+                      ? change({
+                          ...project,
+                          grid: { ...project.grid, codes: !project.grid.codes },
+                        })
+                      : setModal("auth")
                   }
                 >
                   <Palette />
@@ -1520,59 +2129,79 @@ export default function App() {
               </div>
             </section>
             <section className="panel-section">
-              <div className="section-title">
-                <h3>板子设置</h3>
-                <span>
-                  {project.width} × {project.height}
-                </span>
-                <select
-                  className="preset-select"
-                  aria-label="常规板尺寸推荐"
-                  value=""
-                  onChange={(e) => {
-                    const n = +e.target.value;
-                    if (n) {
-                      setBoardW(n);
-                      setBoardH(n);
-                    }
-                  }}
-                >
-                  <option value="">常规板尺寸推荐</option>
-                  {[52, 78, 104, 120].map((n) => (
-                    <option key={n} value={n}>
-                      {n} × {n}
-                    </option>
-                  ))}
-                </select>
+              <h3>输出网格 · 决定细节</h3>
+              <ImportGridControls
+                settings={{
+                  ...project.settings,
+                  width: boardW,
+                  height: boardH,
+                  gridSizing: mainSizing,
+                }}
+                locked={mainGridLocked}
+                onLock={() => setMainGridLocked((v) => !v)}
+                disabled={!!busy}
+                counts={
+                  boardW === project.width && boardH === project.height
+                    ? counts
+                    : null
+                }
+                total={total}
+                material={project.settings.materialSpec}
+                mismatch={false}
+                sourceRatio={sourceRatio}
+                onSizing={(choice) => {
+                  if (choice === "custom") {
+                    setMainSizing("custom");
+                    setMainGridLocked(false);
+                    return;
+                  }
+                  const ratio =
+                    choice === "source"
+                      ? sourceRatio
+                      : choice
+                          .split(":")
+                          .map(Number)
+                          .reduce((a, b) => a / b);
+                  const n = gridFromLongEdge(Math.max(boardW, boardH), ratio);
+                  setBoardW(n.width);
+                  setBoardH(n.height);
+                  setMainSizing(choice === "source" ? "source" : "custom");
+                  setMainGridLocked(true);
+                }}
+                onDimension={(axis, value) => {
+                  const n = mainGridLocked
+                    ? gridFromAxis(
+                        axis,
+                        value,
+                        mainSizing === "source" ? sourceRatio : boardW / boardH,
+                      )
+                    : { [axis]: value };
+                  if (n.width !== undefined) setBoardW(n.width);
+                  if (n.height !== undefined) setBoardH(n.height);
+                }}
+                onDensity={(edge) => {
+                  const n = gridFromLongEdge(
+                    edge,
+                    mainSizing === "source" ? sourceRatio : boardW / boardH,
+                  );
+                  setBoardW(n.width);
+                  setBoardH(n.height);
+                }}
+                update={updateSettings}
+              />
+              <p className="micro">
+                这里修改的是下一次重新生成的参数；当前图纸仍为 {project.width}×
+                {project.height} 格、{counts.length}色、{total.toLocaleString()}
+                颗。主体太小、格数不足、复杂背景或限色会丢细节；可增加格数或裁剪放大主体，同时留意成品尺寸和用豆量。大文件影响性能，与细节密度分开处理。
+              </p>
+              <div className="baseline-actions">
+                <button onClick={applySettings}>应用网格并重新生成</button>
+                <button onClick={restoreBaseline}>恢复生成图纸</button>
+                <button onClick={openRegenerate}>原图构图与参数</button>
               </div>
-
-              <label className="label">板子尺寸</label>
-              <div className="dimensions">
-                <label>
-                  宽
-                  <input
-                    aria-label="板子宽度"
-                    type="number"
-                    min="16"
-                    max="1000"
-                    value={boardW}
-                    onChange={(e) => setBoardW(+e.target.value)}
-                  />
-                </label>
-                <span>×</span>
-                <label>
-                  高
-                  <input
-                    aria-label="板子高度"
-                    type="number"
-                    min="16"
-                    max="1000"
-                    value={boardH}
-                    onChange={(e) => setBoardH(+e.target.value)}
-                  />
-                </label>
-              </div>
-              <p className="micro">宽、高分别设置，范围16～1000</p>
+              <p className="micro">
+                分板规格只决定如何拼接制作，不改变格数。请在图纸导出中选择52／78／104格分板。
+              </p>
               <MaterialSettings
                 compact
                 settings={project.settings}
@@ -1674,7 +2303,7 @@ export default function App() {
                   </div>
                   <button
                     className="soft similar-action"
-                    onClick={() => setModal("similar")}
+                    onClick={() => setModal(user ? "similar" : "auth")}
                   >
                     使用相似色号合并
                   </button>
@@ -1727,7 +2356,10 @@ export default function App() {
               {!counts.length && (
                 <p className="muted">当前图纸为空，绘制后查看用量。</p>
               )}
-              <button className="full" onClick={() => setModal("bead-list")}>
+              <button
+                className="full"
+                onClick={() => setModal(user ? "bead-list" : "auth")}
+              >
                 <FileArrowDown size={17} />
                 打开用豆清单
               </button>
@@ -1767,7 +2399,10 @@ export default function App() {
                 </label>
                 <button
                   className="primary full"
-                  onClick={() => setModal("export")}
+                  onClick={() => {
+                    setBlankTemplate(false);
+                    setModal("export");
+                  }}
                 >
                   <DownloadSimple size={18} />
                   导出图纸
@@ -1844,30 +2479,41 @@ export default function App() {
                 onChange={(e) => setSearch(e.target.value)}
               />
               <div className="side-colors">
-                {filteredColors.map((i) => (
-                  <button
-                    key={i}
-                    title={`${PALETTE[i].code} · ${PALETTE[i].name} · ${countMap.get(i) || 0}颗`}
-                    aria-label={`选择色号${PALETTE[i].code}`}
-                    className={
-                      (i === color ? "selected " : "") +
-                      (project.settings.disabled.includes(i)
-                        ? "disabled-color"
-                        : "")
-                    }
-                    onClick={() => {
-                      setColor(i);
-                      setTool("brush");
-                    }}
-                  >
-                    <span style={{ background: PALETTE[i].hex }} />
-                    <div className="color-row-copy">
-                      <strong>{PALETTE[i].code}</strong>
-                      <small>{PALETTE[i].name}</small>
-                    </div>
-                    <em>需要 {countMap.get(i) || 0} 颗</em>
-                  </button>
-                ))}
+                {(user ? filteredColors : filteredColors.slice(0, 5)).map(
+                  (i) => (
+                    <button
+                      key={i}
+                      title={`${PALETTE[i].code} · ${PALETTE[i].name} · ${countMap.get(i) || 0}颗`}
+                      aria-label={`选择色号${PALETTE[i].code}`}
+                      className={
+                        (i === color ? "selected " : "") +
+                        (project.settings.disabled.includes(i)
+                          ? "disabled-color"
+                          : "")
+                      }
+                      onClick={() => {
+                        setColor(i);
+                        setTool("brush");
+                      }}
+                    >
+                      <span style={{ background: PALETTE[i].hex }} />
+                      <div className="color-row-copy">
+                        <strong>{PALETTE[i].code}</strong>
+                        <small>{PALETTE[i].name}</small>
+                      </div>
+                      <em>需要 {countMap.get(i) || 0} 颗</em>
+                    </button>
+                  ),
+                )}
+                {!user && filteredColors.length > 5 && (
+                  <div className="guest-palette-lock">
+                    <strong>
+                      其余{filteredColors.length - 5}个色号登录后查看
+                    </strong>
+                    <p>本地编辑保留；完整色号和账号下载需要登录。</p>
+                    <button onClick={() => setModal("auth")}>登录／注册</button>
+                  </div>
+                )}
                 {!filteredColors.length && (
                   <p className="muted empty-small">
                     {search ? "没有匹配的色号" : "这里将显示画面中用到的色号"}
@@ -1882,7 +2528,7 @@ export default function App() {
               </div>
               <button
                 className="full soft"
-                onClick={() => setModal("bead-list")}
+                onClick={() => setModal(user ? "bead-list" : "auth")}
               >
                 用豆清单 · 复制与下载
               </button>
@@ -1910,16 +2556,17 @@ export default function App() {
             }
           }
           onClose={() => setIncoming(null)}
-          onGenerate={(s, preview, signal) =>
-            generate(
+          onGenerate={async (s, preview, signal) => {
+            await generate(
               incoming.source,
               incoming.name,
               s,
               incoming.intent,
               preview,
               signal,
-            )
-          }
+            );
+            if (incoming.resultMode === "mosaic") setModal("mosaic");
+          }}
         />
       )}
       {modal === "bead-list" && (
@@ -2034,154 +2681,17 @@ export default function App() {
           }}
         />
       )}
-      {(["disable"] as string[]).includes(modal || "") && (
-        <Dialog
-          title={modal === "disable" ? "禁用指定色号" : "自选颜色与色卡"}
+      {modal === "disable" && (
+        <DisabledColorsDialog
+          project={project}
+          selection={selection}
           onClose={() => setModal(null)}
-          wide
-        >
-          <div className="palette-dialog-top">
-            <div className="selected-color">
-              <div style={{ background: PALETTE[color].hex }} />
-              <span>
-                <b>{PALETTE[color].code}</b>
-                <small>
-                  {PALETTE[color].hex} · {PALETTE[color].name}
-                </small>
-              </span>
-            </div>
-            <label className="custom-hex">
-              自选颜色
-              <input
-                type="color"
-                aria-label="自选颜色"
-                value={PALETTE[color].hex}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setColor(
-                    nearest(
-                      parseInt(v.slice(1, 3), 16),
-                      parseInt(v.slice(3, 5), 16),
-                      parseInt(v.slice(5, 7), 16),
-                    ),
-                  );
-                }}
-              />
-            </label>
-            <input
-              className="search"
-              aria-label="弹窗搜索色号"
-              placeholder="搜索色号 / 色系"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-          <p className="muted">
-            {modal === "disable"
-              ? "点击色号切换禁用状态。应用后，已有格子会改用最接近的可用色号。"
-              : "点击选择画笔颜色；勾选色卡后可将画面限制在自选色号内。任意颜色输入会就近映射到固定221色色卡。"}
-          </p>
-          <div className="full-palette">
-            {PALETTE.map((c, i) => ({ c, i }))
-              .filter(({ c }) =>
-                `${c.code} ${c.name}`
-                  .toLowerCase()
-                  .includes(search.toLowerCase()),
-              )
-              .map(({ c, i }) => (
-                <div
-                  key={i}
-                  className={
-                    "palette-tile " +
-                    (color === i ? "selected " : "") +
-                    (project.settings.disabled.includes(i)
-                      ? "disabled-color"
-                      : "")
-                  }
-                >
-                  <button
-                    aria-label={`色卡${c.code}`}
-                    style={{ background: c.hex }}
-                    title={c.name}
-                    onClick={() => {
-                      if (modal === "disable") {
-                        const d = project.settings.disabled;
-                        updateSettings({
-                          disabled: d.includes(i)
-                            ? d.filter((v) => v !== i)
-                            : [...d, i],
-                        });
-                      } else setColor(i);
-                    }}
-                  />
-                  <span>{c.code}</span>
-                  {modal === "palette" ? (
-                    <input
-                      type="checkbox"
-                      aria-label={`纳入自选${c.code}`}
-                      checked={project.settings.allowed.includes(i)}
-                      onChange={(e) =>
-                        updateSettings({
-                          allowed: e.target.checked
-                            ? [...project.settings.allowed, i]
-                            : project.settings.allowed.filter((n) => n !== i),
-                        })
-                      }
-                    />
-                  ) : (
-                    <small>
-                      {project.settings.disabled.includes(i)
-                        ? "已禁用"
-                        : "可使用"}
-                    </small>
-                  )}
-                </div>
-              ))}
-          </div>
-          <footer>
-            <button
-              onClick={() =>
-                updateSettings(
-                  modal === "disable" ? { disabled: [] } : { allowed: [] },
-                )
-              }
-            >
-              {modal === "disable" ? "恢复全部色号" : "清空自选限制"}
-            </button>
-            <span className="muted">
-              {modal === "disable"
-                ? project.settings.disabled.length + " 色已禁用"
-                : project.settings.allowed.length + " 色已勾选"}
-            </span>
-            <button
-              className="soft"
-              onClick={() => {
-                setTool("brush");
-                setModal(null);
-              }}
-            >
-              使用 {PALETTE[color].code} 画笔
-            </button>
-            <button
-              className="primary"
-              onClick={() => {
-                try {
-                  if (modal === "palette" && !project.settings.allowed.length) {
-                    notify("请至少勾选一种颜色");
-                    return;
-                  }
-                  commit(remapDisabled(project));
-                  setModal(null);
-                  notify("颜色限制已应用");
-                } catch (e) {
-                  notify(errText(e));
-                }
-              }}
-            >
-              应用到当前图纸
-            </button>
-          </footer>
-        </Dialog>
+          onApply={(p) => {
+            commit(p);
+            setModal(null);
+            notify("禁色规则已应用，可撤销恢复");
+          }}
+        />
       )}
       {modal === "replace" && (
         <Dialog title="替换单个色号" onClose={() => setModal(null)}>
@@ -2254,124 +2764,16 @@ export default function App() {
           </footer>
         </Dialog>
       )}
-      {(modal === "adjust" || modal === "align") && (
-        <Dialog
-          title={modal === "adjust" ? "图纸调节" : "图纸识别与网格对齐"}
+      {modal === "adjust" && (
+        <AdjustmentDialog
+          project={project}
           onClose={() => setModal(null)}
-        >
-          <p className="muted">
-            {modal === "adjust"
-              ? "调节原图后重新匹配色卡。当前编辑会备份，结果可撤销。"
-              : "适用于已经按格对齐的图案。调整采样偏移后，按格心识别色号；不自动推断网格间距。"}
-          </p>
-          {modal === "adjust" ? (
-            <>
-              {(
-                [
-                  "brightness",
-                  "contrast",
-                  "saturation",
-                  "sharpen",
-                  "exposure",
-                ] as const
-              ).map((key, i) => (
-                <label className="field" key={key}>
-                  {["亮度", "对比度", "饱和度", "锐化", "曝光"][i]}
-                  <b>{adjust[key]}</b>
-                  <input
-                    aria-label={["亮度", "对比度", "饱和度", "锐化", "曝光"][i]}
-                    type="range"
-                    min={key === "sharpen" ? 0 : -100}
-                    max="100"
-                    value={adjust[key]}
-                    onChange={(e) =>
-                      setAdjust({ ...adjust, [key]: +e.target.value })
-                    }
-                  />
-                </label>
-              ))}
-            </>
-          ) : (
-            <>
-              {(["alignX", "alignY"] as const).map((key, i) => (
-                <label className="field" key={key}>
-                  {i ? "Y方向偏移" : "X方向偏移"}
-                  <b>{adjust[key].toFixed(2)} 格</b>
-                  <input
-                    type="range"
-                    min="-1"
-                    max="1"
-                    step=".05"
-                    value={adjust[key]}
-                    onChange={(e) =>
-                      setAdjust({ ...adjust, [key]: +e.target.value })
-                    }
-                  />
-                </label>
-              ))}
-              <p className="micro">
-                板子使用当前 {project.width} × {project.height}{" "}
-                格设置。请在导入时将图案紧贴裁剪边缘。
-              </p>
-            </>
-          )}
-          <footer>
-            <button
-              onClick={() =>
-                setAdjust({
-                  ...adjust,
-                  brightness: 0,
-                  contrast: 0,
-                  saturation: 0,
-                  sharpen: 0,
-                  exposure: 0,
-                  alignX: 0,
-                  alignY: 0,
-                })
-              }
-            >
-              重置参数
-            </button>
-            <button
-              className="primary"
-              onClick={() =>
-                modal === "adjust"
-                  ? (commit({
-                      ...project,
-                      cells: adjustPattern(
-                        project.cells,
-                        project.width,
-                        project.height,
-                        adjust,
-                      ),
-                      settings: {
-                        ...project.settings,
-                        brightness: adjust.brightness,
-                        contrast: adjust.contrast,
-                        saturation: adjust.saturation,
-                        sharpen: adjust.sharpen,
-                        exposure: adjust.exposure,
-                      },
-                    }),
-                    setModal(null),
-                    notify("图纸调节已应用"))
-                  : generate(
-                      project.source || projectImage(project),
-                      project.sourceName || project.name,
-                      {
-                        ...adjust,
-                        width: project.width,
-                        height: project.height,
-                        mode: "recognize",
-                      },
-                      "regenerate",
-                    )
-              }
-            >
-              应用并重新生成
-            </button>
-          </footer>
-        </Dialog>
+          onApply={(cells) => {
+            commit({ ...project, cells });
+            setModal(null);
+            notify("图纸调节已应用，可撤销");
+          }}
+        />
       )}
       {modal === "reference" && (
         <Dialog title="描摹参考底图" onClose={() => setModal(null)}>
@@ -2399,6 +2801,17 @@ export default function App() {
                   }
                 />
               </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={!!project.reference.backgroundRemoved}
+                  onChange={(e) => removeReferenceBackground(e.target.checked)}
+                />
+                清除底图主要边缘背景（实验，非AI）
+              </label>
+              <p className="micro">
+                可能误删与背景相近的主体；原始底图保留，取消勾选可还原。
+              </p>
               <div className="reference-fields">
                 {(["x", "y", "width", "height"] as const).map((key, i) => (
                   <label className="field" key={key}>
@@ -2444,6 +2857,7 @@ export default function App() {
                 <button onClick={() => referenceInput.current?.click()}>
                   更换图片
                 </button>
+                <button onClick={recognizeReference}>识别已对齐底图</button>
                 <button className="primary" onClick={() => setModal(null)}>
                   完成
                 </button>
@@ -2463,14 +2877,53 @@ export default function App() {
         <ExportDialog
           project={project}
           options={exportOptions}
+          user={user}
+          blankTemplate={blankTemplate}
           onChange={setExportOptions}
-          onClose={() => setModal(null)}
+          onClose={() => {
+            setBlankTemplate(false);
+            setModal(null);
+          }}
           onExport={doExport}
         />
       )}
       {modal === "works" && (
         <Dialog title="我的作品" onClose={() => setModal(null)} wide>
+          <p className="hint">
+            本地作品归属：{user ? user.username : "游客"}
+            ；其他身份的数据独立保留。账号作品仅从服务端读取，跨设备请登录同一账号后打开。
+          </p>
           <div className="works-actions">
+            <button
+              onClick={async () => {
+                try {
+                  const p = await readDraft(localScope());
+                  if (!p) {
+                    notify("没有游客草稿");
+                    return;
+                  }
+                  if (
+                    !window.confirm(
+                      "将游客草稿复制到当前账号的本地编辑区？不会自动上传，当前作品会先备份。",
+                    )
+                  )
+                    return;
+                  await openProject(
+                    {
+                      ...p,
+                      id: crypto.randomUUID(),
+                      name: p.name + " · 导入游客副本",
+                      cloudSync: undefined,
+                    },
+                    true,
+                  );
+                } catch (e) {
+                  setFormError(errText(e));
+                }
+              }}
+            >
+              从游客草稿导入副本
+            </button>
             <button
               className="primary"
               onClick={async () => {
@@ -2490,6 +2943,67 @@ export default function App() {
               备份当前项目
             </button>
           </div>
+          <details className="legacy-adoption">
+            <summary>旧版草稿与未归属作品恢复（需明确导入）</summary>
+            <p className="micro">
+              旧版无归属数据不会静默绑定新账号。原记录保留，导入创建当前身份的独立副本；不会自动上传。
+            </p>
+            <button
+              onClick={async () => {
+                try {
+                  const p = await loadLegacyDraft();
+                  if (!p) {
+                    notify("没有旧版草稿");
+                    return;
+                  }
+                  if (
+                    !window.confirm(
+                      "旧版草稿可能属于此前使用此浏览器的账号。确认将其复制到当前身份？",
+                    )
+                  )
+                    return;
+                  await openProject(
+                    {
+                      ...p,
+                      id: crypto.randomUUID(),
+                      name: (p.name + " · 旧版恢复").slice(0, 120),
+                      cloudSync: undefined,
+                    },
+                    true,
+                  );
+                } catch (e) {
+                  setFormError(errText(e));
+                }
+              }}
+            >
+              查看并导入旧版草稿
+            </button>
+            {unassignedWorks.map((p) => (
+              <div key={p.id}>
+                <span>{p.name}</span>
+                <button
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        "确认将此旧版作品复制到当前身份？原记录保留，不会上传。",
+                      )
+                    )
+                      openProject(
+                        {
+                          ...p,
+                          id: crypto.randomUUID(),
+                          cloudSync: undefined,
+                          name: (p.name + " · 旧版恢复").slice(0, 120),
+                        },
+                        true,
+                      );
+                  }}
+                >
+                  导入副本
+                </button>
+              </div>
+            ))}
+          </details>
           <h3>
             此浏览器的本地作品{" "}
             <span className="muted">{localWorks.length}</span>
@@ -2507,6 +3021,45 @@ export default function App() {
                 </button>
                 <div>
                   <button onClick={() => downloadProject(p)}>导出项目</button>
+                  <button
+                    onClick={async () => {
+                      const name = window.prompt("重命名本地作品", p.name);
+                      if (!name?.trim()) return;
+                      try {
+                        const next = {
+                          ...p,
+                          name: name.trim().slice(0, 120),
+                          updatedAt: Date.now(),
+                        };
+                        await saveLocal(next);
+                        if (project.id === p.id)
+                          change({ ...project, name: next.name });
+                        setLocalWorks(await listLocal());
+                      } catch (e) {
+                        setFormError(errText(e));
+                      }
+                    }}
+                  >
+                    重命名
+                  </button>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await saveLocal({
+                          ...p,
+                          id: crypto.randomUUID(),
+                          name: (p.name + " · 副本").slice(0, 120),
+                          cloudSync: undefined,
+                          updatedAt: Date.now(),
+                        });
+                        setLocalWorks(await listLocal());
+                      } catch (e) {
+                        setFormError(errText(e));
+                      }
+                    }}
+                  >
+                    复制
+                  </button>
                   <button
                     className="danger-quiet"
                     onClick={async () => {
@@ -2541,9 +3094,7 @@ export default function App() {
                 onClick={async () => {
                   try {
                     await api("/logout", { method: "POST" });
-                    setUser(null);
-                    setCloudWorks([]);
-                    clearActiveSync();
+                    await switchAccount(null);
                     notify("已退出账号");
                   } catch (e) {
                     setFormError(errText(e));
@@ -2567,7 +3118,7 @@ export default function App() {
                   onClick={async () => {
                     await saveCloud();
                     try {
-                      setCloudWorks((await api("/works")).works);
+                      setCloudWorks(await accountWorks());
                     } catch (e) {
                       setFormError(errText(e));
                     }
@@ -2627,6 +3178,60 @@ export default function App() {
                       打开
                     </button>
                     <button
+                      onClick={async () => {
+                        const title = window.prompt("新的作品名称", w.title);
+                        if (!title) return;
+                        try {
+                          const result = await api("/works/" + w.id, {
+                            method: "PATCH",
+                            body: JSON.stringify({
+                              title,
+                              expectedUpdated: w.updated,
+                              expectedUserId: user.id,
+                            }),
+                          });
+                          if (w.id === project.id) {
+                            const key = cloudSyncKey(
+                                serviceSource,
+                                user.id,
+                                w.id,
+                              ),
+                              known = cloudVersions.current.get(key);
+                            if (known?.updated === w.updated) {
+                              cloudVersions.current.set(key, {
+                                ...known,
+                                updated: result.updated,
+                              });
+                              change({ ...current.current, name: title });
+                            } else
+                              notify(
+                                "账号作品已重命名；当前编辑的版本较旧，请重新打开或另存副本",
+                              );
+                          }
+                          setCloudWorks(await accountWorks());
+                        } catch (e) {
+                          setFormError(errText(e));
+                        }
+                      }}
+                    >
+                      重命名
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await api("/works/" + w.id + "/copy", {
+                            method: "POST",
+                            body: JSON.stringify({ expectedUserId: user.id }),
+                          });
+                          setCloudWorks(await accountWorks());
+                        } catch (e) {
+                          setFormError(errText(e));
+                        }
+                      }}
+                    >
+                      另存账号副本
+                    </button>
+                    <button
                       className="danger-quiet"
                       onClick={async () => {
                         if (
@@ -2636,8 +3241,11 @@ export default function App() {
                         )
                           return;
                         try {
-                          await api("/works/" + w.id, { method: "DELETE" });
-                          setCloudWorks((await api("/works")).works);
+                          await api("/works/" + w.id, {
+                            method: "DELETE",
+                            body: JSON.stringify({ expectedUserId: user.id }),
+                          });
+                          setCloudWorks(await accountWorks());
                         } catch (e) {
                           setFormError(errText(e));
                         }
@@ -2660,102 +3268,74 @@ export default function App() {
         </Dialog>
       )}
       {modal === "auth" && (
-        <Dialog
-          title={authMode === "login" ? "欢迎回来" : "创建独立账号"}
-          onClose={() => {
+        <AccountDialog
+          user={user}
+          onUser={switchAccount}
+          onClose={() => setModal(null)}
+          onWorks={openWorks}
+        />
+      )}
+      {modal === "handmade" && (
+        <HandmadeDialog
+          project={project}
+          onClose={() => setModal(null)}
+          onResize={() => {
             setModal(null);
-            setPassword("");
-            setFormError("");
+            openRegenerate();
           }}
-        >
-          <div className="segmented auth-tabs">
-            <button
-              className={authMode === "login" ? "active" : ""}
-              onClick={() => {
-                setAuthMode("login");
-                setFormError("");
+          onApply={(normal, handmade, active) => {
+            commit({
+              ...project,
+              cells: (active === "normal" ? normal : handmade).slice(),
+              variants: { normal, handmade, active },
+              view: "beads",
+            });
+            setModal(null);
+            notify("已切换候选图，普通与手搓两版编辑分别保留");
+          }}
+        />
+      )}
+      {modal === "mosaic" && (
+        <Dialog title="马赛克结果" wide onClose={() => setModal(null)}>
+          <p>
+            {project.name} · {project.width} × {project.height} 格 ·{" "}
+            {counts.length}色。与当前图纸共享同一份网格，纯色块呈现。
+          </p>
+          <div className="candidate-preview">
+            <ImportPreview
+              result={{
+                source: "",
+                settingsKey: "",
+                width: project.width,
+                height: project.height,
+                cells: project.cells,
               }}
-            >
-              登录
-            </button>
-            <button
-              className={authMode === "register" ? "active" : ""}
-              onClick={() => {
-                setAuthMode("register");
-                setFormError("");
-              }}
-            >
-              注册
-            </button>
+              pending={false}
+              progress={100}
+              error=""
+              onRetry={() => {}}
+            />
           </div>
-          <p className="muted">账号用于保存服务端作品，本地制图无需登录。</p>
-          <form
-            onSubmit={async (e) => {
-              e.preventDefault();
-              setNetworkBusy(true);
-              setFormError("");
-              try {
-                const r = await api("/" + authMode, {
-                  method: "POST",
-                  body: JSON.stringify({ username, password }),
-                });
-                setUser(r.user);
-                setPassword("");
-                clearActiveSync();
+          <footer>
+            <button onClick={openRegenerate}>从原图调整并转换</button>
+            <button
+              onClick={() => {
+                change({ ...project, view: "beads" });
                 setModal(null);
-                notify(authMode === "login" ? "登录成功" : "账号已创建");
-              } catch (e) {
-                setFormError(errText(e));
-              } finally {
-                setNetworkBusy(false);
-              }
-            }}
-          >
-            <label className="field">
-              账号
-              <input
-                aria-label="账号"
-                autoComplete="username"
-                required
-                minLength={3}
-                maxLength={64}
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-              />
-            </label>
-            <label className="field">
-              密码
-              <input
-                aria-label="密码"
-                type="password"
-                autoComplete={
-                  authMode === "login" ? "current-password" : "new-password"
-                }
-                required
-                minLength={10}
-                maxLength={128}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </label>
-            <p className="micro">
-              账号3～64位，密码至少10位。本站不连接原站账号，无邮件找回服务。
-            </p>
-            {formError && <p className="error">{formError}</p>}
-            <footer>
-              <button
-                className="primary full"
-                type="submit"
-                disabled={networkBusy}
-              >
-                {networkBusy
-                  ? "正在处理…"
-                  : authMode === "login"
-                    ? "登录账号"
-                    : "创建账号"}
-              </button>
-            </footer>
-          </form>
+              }}
+            >
+              置于画板继续编辑
+            </button>
+            <button
+              className="primary"
+              onClick={() => {
+                setExportOptions({ ...exportOptions, kind: "mosaic" });
+                setModal("export");
+              }}
+            >
+              保存纯马赛克PNG
+            </button>
+          </footer>
         </Dialog>
       )}
       {modal === "outline" && (
@@ -2814,6 +3394,9 @@ export default function App() {
       )}
       {modal === "more" && (
         <Dialog title="更多功能" onClose={() => setModal(null)}>
+          <button onClick={() => openAdjust("adjust")}>
+            图纸调节 · 亮度／对比度／饱和度／锐化／曝光
+          </button>
           <div className="coming-soon">
             <DotsThree size={56} />
             <span className="eyebrow">MORE TOOLS</span>
@@ -2825,7 +3408,7 @@ export default function App() {
       {modal === "help" && (
         <Dialog title="从图片到一颗颗拼豆" onClose={() => setModal(null)}>
           <p className="hint">
-            完整制图能力已开放。图片在浏览器本地处理，草稿自动保存在此浏览器；重要作品请保存命名副本或导出项目文件备份。账号作品保存在配套独立服务中。
+            图片计算和编辑在浏览器本地进行，本地草稿按身份分别保存。账号作品、权益、激活码和图纸下载由本服务校验。重要作品请保存命名副本或导出项目文件。
           </p>
           <ol className="guide">
             <li>
@@ -2854,7 +3437,9 @@ export default function App() {
             </li>
           </ol>
           <p className="hint">
-            色卡为原站公开221色色值的固定快照；屏幕颜色仅作参考。示例为本地原创图案，高级处理采用独立实现。
+            色卡为固定版本的 MARD 221
+            色号体系，屏幕颜色仅作参考。雷电将军示例原图随项目保存，来源见素材记录；制图与导出使用同一项目网格。AI
+            生图与更多功能中未开放的入口，按当前原站可见状态显示。
           </p>
           <footer>
             <button className="primary" onClick={() => setModal(null)}>
@@ -2864,24 +3449,58 @@ export default function App() {
         </Dialog>
       )}
       {readyExport && (
-        <Dialog title="导出完成" onClose={() => setReadyExport(null)}>
+        <Dialog
+          title="导出完成"
+          onClose={() => {
+            if (!networkBusy) {
+              refundExport();
+              setReadyExport(null);
+            }
+          }}
+        >
           <div className="export-ready">
             <CheckCircle size={40} />
-            <h3>文件已准备好</h3>
+            <h3>文件已生成</h3>
+            <p role="status">{exportStatus}</p>
+            {readyExport.job && !exportJob.current && (
+              <p>
+                <a
+                  href={"/api/exports/" + readyExport.job + "/download"}
+                  download
+                >
+                  再次下载
+                </a>{" "}
+                ·{" "}
+                <a
+                  target="_blank"
+                  rel="noreferrer"
+                  href={
+                    "/api/exports/" + readyExport.job + "/download?preview=1"
+                  }
+                >
+                  打开备用文件后保存
+                </a>
+              </p>
+            )}
             <p className="muted">{readyExport.name}</p>
             <p className="micro">
               {(readyExport.blob.size / 1024).toFixed(1)} KB · 点击保存到设备
             </p>
           </div>
           <footer>
-            <button onClick={() => setReadyExport(null)}>关闭</button>
+            <button
+              disabled={networkBusy}
+              onClick={() => {
+                refundExport();
+                setReadyExport(null);
+              }}
+            >
+              关闭／取消未完成任务
+            </button>
             <button
               className="primary"
-              onClick={() => {
-                download(readyExport.blob, readyExport.name);
-                setReadyExport(null);
-                notify("已提交文件下载");
-              }}
+              disabled={networkBusy}
+              onClick={submitExport}
             >
               <DownloadSimple size={18} />
               下载文件
@@ -2895,7 +3514,7 @@ export default function App() {
             <Spinner className="spin" size={36} />
             <h3>{busy.message}</h3>
             <progress max="100" value={busy.progress} />
-            <p>{busy.progress}% · 正在浏览器本地处理</p>
+            <p>{busy.progress}% · 图像在本地计算；权益和下载由本服务校验</p>
             <button onClick={cancelJob}>取消处理</button>
           </div>
         </div>
