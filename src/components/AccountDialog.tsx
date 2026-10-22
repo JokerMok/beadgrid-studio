@@ -116,7 +116,6 @@ export default function AccountDialog({
               <button onClick={onWorks}>我的作品</button>
               <a href={policy?.redeemUrl}>会员／兑换</a>
               <a href={policy?.securityUrl}>账号与安全</a>
-              <a href={policy?.adminUrl}>统一管理后台</a>
             </div>
             <div className="account-links">
               <button

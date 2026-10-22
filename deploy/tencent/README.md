@@ -70,3 +70,7 @@ bash deploy/tencent/rollback.sh
 受控回退（仅服务器root、确认回退目标后）：`bash /srv/apps/beadgrid-studio/deploy/rollback-accounts.sh 20261022T013056Z-c1404b11f0bd`。会保存新OIDC数据副本，再恢复切换前旧数据；不清理中心用户/应用。当前没有真正执行生产回退，SQLite一致性和备份可读已校验。
 
 Caddy已为本项目/auth/*和/admin增加同源路由，并跳过/auth/*访问日志；中心站点仅为/api/v1/products/beadgrid/*跳过访问日志，避免X-User-Token记录。没有覆盖全局Caddyfile或影响其他站点。中心注册脚本、QA脚本属于运维工具，非产品运行入口；QA脚本只允许两个明确专用测试消费者与beadgrid，不是全量测试或生产初始化。
+
+## v1.7.1 消费者跨站衔接
+
+先发布支持 consumer-entry 的账号中心，再发布拼豆。账号与安全／兑换通过受认证同源后端取得中心导航上下文，中心自行OIDC建立主机独立会话，校验统一UID一致。普通用户菜单无后台入口。生产凭据、issuer、数据结构和权益不变；无需重跑register-accounts或数据清理。正常更新仅DB_CHANGE_REVIEWED=1，不设置RESET_BEADGRID_ACCOUNTS。回退保留现有数据，未完成的授权需重新开始。

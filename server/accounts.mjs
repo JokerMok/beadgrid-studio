@@ -165,7 +165,10 @@ export function installAccounts({ app, db, rate }) {
       verifier,
       Date.now() + 600000,
     );
-    res.cookie(flowName, token, { ...opts, maxAge: 600000 });
+    res.cookie(flowName + "_" + hash(state).slice(0, 24), token, {
+      ...opts,
+      maxAge: 600000,
+    });
     const url = oidc.buildAuthorizationUrl(c, {
       redirect_uri: callback.href,
       response_type: "code",
@@ -179,13 +182,15 @@ export function installAccounts({ app, db, rate }) {
     res.redirect(url.href);
   });
   app.get(callback.pathname, rate, async (req, res) => {
-    const token = readCookie(req, flowName);
+    const attemptCookie =
+      flowName + "_" + hash(String(req.query.state || "")).slice(0, 24);
+    const token = readCookie(req, attemptCookie);
     const row =
       token &&
       db
         .prepare("DELETE FROM login_attempts WHERE token=? RETURNING *")
         .get(hash(token));
-    res.clearCookie(flowName, opts);
+    res.clearCookie(attemptCookie, opts);
     try {
       if (!row || row.expires <= Date.now())
         throw Error("Invalid login attempt");
@@ -370,13 +375,37 @@ export function installAccounts({ app, db, rate }) {
     clear(req, res);
     res.json({ ok: true });
   });
+  app.get("/api/account/enter/:tab", auth, async (req, res) => {
+    if (!["security", "redeem"].includes(req.params.tab))
+      throw fault(400, "INVALID_TARGET", "个人中心目标无效");
+    const entry = await centerCall(req.accessToken, "consumer-entry", {
+      tab: req.params.tab,
+    });
+    const target = new URL(entry.url);
+    if (
+      target.origin !== accountsUrl.origin ||
+      target.pathname !== "/auth/consumer" ||
+      target.username ||
+      target.password ||
+      target.hash ||
+      !/^[A-Za-z0-9_-]{43}$/.test(target.searchParams.get("context") || "") ||
+      [...target.searchParams.keys()].some((key) => key !== "context")
+    )
+      throw fault(
+        502,
+        "INVALID_CENTER_ENTRY",
+        "账号中心返回了无效入口，请重试",
+      );
+    res.set("Cache-Control", "no-store");
+    res.set("Referrer-Policy", "no-referrer");
+    res.redirect(target.href);
+  });
   app.get("/api/policy", (_, res) =>
     res.json({
       authMode: "oidc",
       accountsUrl: accountsUrl.origin,
-      securityUrl: new URL("/?product=beadgrid&tab=security", accountsUrl).href,
-      redeemUrl: new URL("/?product=beadgrid&tab=redeem", accountsUrl).href,
-      adminUrl: new URL("/admin", accountsUrl).href,
+      securityUrl: "/api/account/enter/security",
+      redeemUrl: "/api/account/enter/redeem",
       rules: {
         workLimit: 50,
         exportReservationMinutes: 5,

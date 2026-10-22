@@ -136,6 +136,8 @@ test("公共OIDC与权威权益：一次回调、签名/nonce/PKCE，身份隔�
     const u = tokens.get(req.headers["x-user-token"]);
     if (!u)
       return json(res, 401, { code: "INVALID_TOKEN", error: "invalid token" });
+    if (url.pathname.endsWith("/consumer-entry"))
+      return json(res, 200, {url: serverBase + "/auth/consumer?context=" + "n".repeat(43)});
     if (url.pathname.endsWith("/identity"))
       return json(res, 200, {
         user: { ...u, issuer: serverBase, organization: "consumers" },
@@ -259,7 +261,7 @@ test("公共OIDC与权威权益：一次回调、签名/nonce/PKCE，身份隔�
     const r = await fetch(base + "/auth/login", { redirect: "manual" }),
       cookie = r.headers
         .getSetCookie()
-        .find((x) => x.startsWith("beadgrid_oidc_login="))
+        .find((x) => x.startsWith("beadgrid_oidc_login_"))
         ?.split(";")[0],
       auth = new URL(r.headers.get("location")),
       code = randomUUID();
@@ -323,6 +325,14 @@ test("公共OIDC与权威权益：一次回调、签名/nonce/PKCE，身份隔�
       b = await login("b");
     assert.ok(a.session);
     assert.ok(b.session);
+    const policy = (await req("", "/policy")).body;
+    assert.equal(policy.securityUrl, "/api/account/enter/security");
+    assert.equal(policy.adminUrl, undefined);
+    const enter = await fetch(base + policy.securityUrl, {headers:{Cookie:a.session},redirect:"manual"});
+    assert.equal(enter.status,302);
+    assert.equal(new URL(enter.headers.get("location")).origin, serverBase);
+    assert.equal((await req("", "/account/enter/security")).status,401);
+    assert.equal((await req(a.session, "/account/enter/admin")).status,400);
     assert.match(a.result.headers.getSetCookie().join(";"), /HttpOnly/);
     assert.match(a.result.headers.getSetCookie().join(";"), /SameSite=Lax/);
     assert.match(
